@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>supertonic-docx · document to voice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="brand">
+      <span class="brand-mark">§</span>
+      <span class="brand-name">supertonic<span class="brand-sep">·</span>docx</span>
+    </div>
+    <div class="masthead-meta">
+      <span id="meta-voices">— voices</span>
+      <span class="meta-sep">/</span>
+      <span id="meta-langs">— languages</span>
+      <span class="meta-sep">/</span>
+      <span>fully offline</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <p class="kicker">A document-to-speech pipeline</p>
+    <h1>Read me<br><em>aloud.</em></h1>
+    <p class="dek">
+      Drop a Word document. Pick voices and languages.
+      The synthesis runs locally on this machine — every paragraph becomes
+      a WAV, every bundle gets stitched into a single file you can play.
+    </p>
+  </section>
+
+  <section class="dropper" id="dropper">
+    <input type="file" id="file-input" accept=".docx" hidden>
+    <div class="dropper-inner" id="dropper-inner">
+      <div class="dropper-mark">↓</div>
+      <p class="dropper-text">
+        <strong>Drop a .docx here</strong><br>
+        <span class="dropper-sub">or click to choose a file</span>
+      </p>
+      <p class="dropper-file" id="dropper-file"></p>
+    </div>
+  </section>
+
+  <section class="controls">
+    <fieldset class="picker">
+      <legend>Voices</legend>
+      <p class="picker-help">Pick one or more presets. Output is generated per voice.</p>
+      <div class="chip-grid" id="voice-chips" data-loading="true">
+        <span class="loading-pulse">loading voices…</span>
+      </div>
+    </fieldset>
+
+    <fieldset class="picker">
+      <legend>Languages</legend>
+      <p class="picker-help">
+        The model reads the text using the chosen language's phonemisation.
+        One bundle is produced per voice × language combination.
+      </p>
+      <div class="chip-grid" id="lang-chips" data-loading="true">
+        <span class="loading-pulse">loading languages…</span>
+      </div>
+    </fieldset>
+  </section>
+
+  <section class="action">
+    <button id="submit" class="submit" disabled>
+      <span class="submit-label">Synthesize</span>
+      <span class="submit-tally" id="submit-tally">— · —</span>
+    </button>
+    <p class="action-note" id="action-note">Pick a file, at least one voice, and at least one language.</p>
+  </section>
+
+  <section class="job" id="job-panel" hidden>
+    <header class="job-header">
+      <h2>Job <code id="job-id">—</code></h2>
+      <span class="job-status" id="job-status">queued</span>
+    </header>
+    <div class="job-progress">
+      <div class="job-progress-bar" id="job-progress-bar"></div>
+    </div>
+    <p class="job-progress-text" id="job-progress-text">0 / 0</p>
+
+    <div class="job-outputs" id="job-outputs"></div>
+    <p class="job-error" id="job-error" hidden></p>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p>
+    Built on <a href="https://huggingface.co/Supertone/supertonic-3" target="_blank" rel="noopener">Supertonic 3</a>.
+    Runs on ONNX Runtime; nothing leaves this machine.
+  </p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

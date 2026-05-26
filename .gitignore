@@ -1,0 +1,18 @@
+# Model assets fetched at setup time — too big and license-restricted to vendor.
+/assets/
+
+# Runtime data — generated audio + dropped files.
+/inbox/*
+/outbox/*
+!/inbox/.gitkeep
+!/outbox/.gitkeep
+
+# Go build artefacts.
+/backend/server
+/backend/cmd/server/server
+
+# IDE clutter.
+.idea/
+.vscode/
+*.swp
+.DS_Store

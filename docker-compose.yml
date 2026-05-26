@@ -1,0 +1,33 @@
+# docker-compose.yml
+#
+# One-command local run. Brings up the Go service which serves the web UI,
+# the HTTP API, and the inbox-folder watcher.
+#
+# Mounts:
+#   ./assets  → ONNX model + voices.   Populated by scripts/fetch-model.sh
+#   ./inbox   → Drop .docx files here. Watcher processes them automatically
+#               with SUPERTONIC_DEFAULT_VOICES × SUPERTONIC_DEFAULT_LANGS.
+#   ./outbox  → All generated audio. Browse with the web UI or via the file
+#               system; the structure is documented in README.md.
+
+services:
+  supertonic-docx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: supertonic-docx:latest
+    container_name: supertonic-docx
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./assets:/app/assets:ro     # model is read-only at runtime
+      - ./inbox:/app/inbox
+      - ./outbox:/app/outbox
+    environment:
+      SUPERTONIC_DEFAULT_VOICES: "M1,F1"
+      SUPERTONIC_DEFAULT_LANGS:  "en"
+      SUPERTONIC_PARA_GAP_MS:    "300"
+      # To disable the watcher (web-UI only), uncomment:
+      # SUPERTONIC_INBOX: ""
+    # The model itself is CPU-only; no GPU runtime config required.
