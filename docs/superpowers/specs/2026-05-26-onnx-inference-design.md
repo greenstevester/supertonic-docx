@@ -60,8 +60,9 @@ alternative (minimal hand-port) was rejected as pure risk for no benefit.
 - Add upstream dependencies to `backend/go.mod`; run `go mod tidy`.
 - Include the upstream repo's `LICENSE` in the vendored directory for attribution, plus a
   short `VENDORED.md` noting source repo, commit/tag, and the local modifications
-  (package rename, `main` removal, seed hook). **Verify the upstream license permits
-  vendoring** before copying — if it is not MIT/Apache/BSD-compatible, stop and raise it.
+  (package rename, `main` removal, seed hook). **License: confirmed MIT (verified
+  2026-05-26 against the upstream `LICENSE`)** — vendoring is permitted; include Supertone's
+  copyright notice and the full MIT license text in the vendored directory.
 - **Seed hook.** Upstream `sampleNoisyLatent` hardcodes
   `rand.New(rand.NewSource(time.Now().UnixNano()))`, making output non-deterministic.
   Replace with an injectable seed/RNG that **defaults to time-based** (preserving upstream
