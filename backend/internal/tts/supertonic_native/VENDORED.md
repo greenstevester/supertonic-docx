@@ -5,7 +5,7 @@
 - **License:** MIT (see ./LICENSE, copied verbatim from the upstream repo root;
   confirmed 2026-05-26). Vendoring permitted with the copyright notice + license text.
 - **Pristine helper.go sha256:** 7a1b6454c7bc7504eb14f97b8d45a7beef4a4465ceb17fc670526cdfcd19c3c0
-- **Vendored helper.go sha256:** <filled in Task 3>
+- **Vendored helper.go sha256:** 31793011166df7c4647c1bf220ebf3e29bd9d03aa1bac3d0b67e82dcdccdcf5e
 
 ## Local modifications (and only these)
 
