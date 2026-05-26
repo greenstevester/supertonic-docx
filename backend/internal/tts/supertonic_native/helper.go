@@ -618,6 +618,10 @@ type TextToSpeech struct {
 	vectorEstOrt  *ort.DynamicAdvancedSession
 	vocoderOrt    *ort.DynamicAdvancedSession
 	SampleRate    int
+	// SeedFunc supplies the RNG seed for sampleNoisyLatent. Defaults to a
+	// time-based seed (set in LoadTextToSpeech) so production output stays
+	// naturally varied; evals override it for reproducibility (LOCAL MOD).
+	SeedFunc      func() int64
 	baseChunkSize int
 	chunkCompress int
 	ldim          int
@@ -642,7 +646,8 @@ func (tts *TextToSpeech) sampleNoisyLatent(durOnnx []float32) ([][][]float64, []
 	latentLen := int((wavLenMax + float64(chunkSize) - 1) / float64(chunkSize))
 	latentDim := tts.ldim * tts.chunkCompress
 
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// LOCAL MOD: injectable seed for reproducible evals
+	rng := rand.New(rand.NewSource(tts.SeedFunc()))
 	noisyLatent := make([][][]float64, bsz)
 	for b := 0; b < bsz; b++ {
 		batch := make([][]float64, latentDim)
@@ -908,6 +913,7 @@ func LoadTextToSpeech(onnxDir string, useGPU bool, cfg Config) (*TextToSpeech, e
 		vectorEstOrt:  vectorEstOrt,
 		vocoderOrt:    vocoderOrt,
 		SampleRate:    cfg.AE.SampleRate,
+		SeedFunc:      func() int64 { return time.Now().UnixNano() }, // LOCAL MOD
 		baseChunkSize: cfg.AE.BaseChunkSize,
 		chunkCompress: cfg.TTL.ChunkCompressFactor,
 		ldim:          cfg.TTL.LatentDim,
