@@ -59,7 +59,7 @@ docker compose up --build
 
 That's the whole setup. You now have:
 
-- **Web UI** → http://localhost:8080
+- **Web UI** → http://localhost:8787
 - **Watched folder** → drop `.docx` files into `./inbox/`; output lands in `./outbox/job-<id>/`
 
 To stop: `docker compose down`.

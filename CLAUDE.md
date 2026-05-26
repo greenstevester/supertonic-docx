@@ -20,7 +20,7 @@ exactly what to replace and the expected tensor shapes.
 ./scripts/fetch-model.sh
 
 # Full stack (web UI + API + watcher) the way it's meant to run
-docker compose up --build      # → http://localhost:8080
+docker compose up --build      # → http://localhost:8787
 docker compose down
 
 # Backend, from ./backend

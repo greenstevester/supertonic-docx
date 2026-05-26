@@ -19,7 +19,7 @@ services:
     container_name: supertonic-docx
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8787:8080"
     volumes:
       - ./assets:/app/assets:ro     # model is read-only at runtime
       - ./inbox:/app/inbox
