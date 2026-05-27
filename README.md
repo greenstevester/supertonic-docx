@@ -21,7 +21,7 @@ the only thing you have to install besides the model fetcher.
 | **Docker** (with Compose v2) | Running the app | Builds + runs the whole stack with one command | `docker compose version` |
 | **git** | Cloning + fetching the model | `fetch-model.sh` clones the model repo | `git --version` |
 | **git-lfs** | Fetching the model | Supertonic's ONNX weights are stored as Git LFS objects | `git lfs version` |
-| **Go 1.22+** | *Local* dev only (running outside Docker) | Building/running the backend directly | `go version` |
+| **Go 1.25+** | *Local* dev only (running outside Docker) | Building/running the backend directly | `go version` |
 
 Installing **git-lfs** (one-time):
 
@@ -67,7 +67,7 @@ than producing silent files; check that `./assets` was populated by `fetch-model
 ### Setup (local, without Docker)
 
 For backend development you can skip Docker. You still need the model assets (steps 1–2 above)
-and **Go 1.22+**.
+and **Go 1.25+**.
 
 The binary's defaults point at in-container paths (`/app/assets`, …), so you **must** override
 the env vars to local directories — otherwise it won't find the model:

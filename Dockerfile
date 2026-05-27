@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ----
-FROM golang:1.22-bookworm AS build
+FROM golang:1.25-bookworm AS build
 ARG ONNXRUNTIME_VERSION=1.16.0
 WORKDIR /src
 
@@ -19,13 +19,13 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
-# CGO_ENABLED=0: the ONNX binding loads libonnxruntime via purego/dlopen, so no
-# C toolchain is needed. CONTINGENCY: if this ever fails with an "import "C"" or
-# linker error (a future binding version reintroducing cgo), set
-# CGO_ENABLED=1 and add `gcc` here:
-#   RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
-#   RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o /out/server ./cmd/server
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /out/server ./cmd/server
+# yalue/onnxruntime_go uses cgo (import "C") for its dlopen plumbing, so the
+# build needs a C compiler and CGO_ENABLED=1. The native libonnxruntime.so is
+# only dlopen'd at runtime (via ONNXRUNTIME_LIB_PATH), not linked at build time,
+# and the debian runtime stage provides the glibc this binary links against.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc \
+    && rm -rf /var/lib/apt/lists/*
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o /out/server ./cmd/server
 
 # ---- runtime stage ----
 FROM debian:bookworm-slim
