@@ -35,7 +35,10 @@ func TestParityWrapperVsDirect(t *testing.T) {
 	defer e.Close()
 	e.model.SeedFunc = func() int64 { return seed } // pin (white-box)
 
+	// synthesizeOne requires the caller to hold e.mu (single ONNX session).
+	e.mu.Lock()
 	got, sr, err := e.synthesizeOne(parityText, voice, lang)
+	e.mu.Unlock()
 	if err != nil {
 		t.Fatalf("synthesizeOne: %v", err)
 	}
@@ -58,10 +61,7 @@ func TestParityWrapperVsDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadVoiceStyle: %v", err)
 	}
-	defer func() {
-		style.TtlTensor.Destroy()
-		style.DpTensor.Destroy()
-	}()
+	defer style.Destroy()
 
 	want, _, err := model.Call(parityText, lang, style, totalStep, speed, chunkSilenceSec)
 	if err != nil {
