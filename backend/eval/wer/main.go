@@ -86,7 +86,8 @@ func main() {
 
 		thr, ok := thresholds[e.Lang]
 		if !ok {
-			fmt.Printf("WARN  %s: no threshold for lang %q; skipping gate\n", e.ID, e.Lang)
+			failures++
+			fmt.Printf("FAIL  %s: no threshold for lang %q (add it to thresholds.json)\n", e.ID, e.Lang)
 			continue
 		}
 		var score float64
@@ -113,6 +114,9 @@ func main() {
 func transcribe(asr, wav, lang string) (string, error) {
 	out, err := exec.Command(asr, wav, lang).Output()
 	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
