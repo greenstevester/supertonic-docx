@@ -1,22 +1,18 @@
 package tts
 
-// supportedLanguages returns the 31 language codes baked into Supertonic 3.
-// Source: https://huggingface.co/Supertone/supertonic-3#supported-languages
-//
-// Kept in code (not a config file) so the binary is self-contained and the
-// frontend can fetch this list via /api/catalogue without any extra mounts.
+import "github.com/yourorg/supertonic-docx/internal/tts/supertonic_native"
+
+// supportedLanguages returns the language codes the model accepts, taken
+// directly from the vendored engine so there is a single source of truth.
 func supportedLanguages() []string {
-	return []string{
-		"ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fi",
-		"fr", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv",
-		"nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk",
-		"vi",
-	}
+	out := make([]string, len(supertonic_native.AvailableLangs))
+	copy(out, supertonic_native.AvailableLangs)
+	return out
 }
 
-// LanguageName maps ISO codes to display names for the UI.
-// English-only — the UI is for English-speaking operators; the model
-// itself doesn't care what we call these.
+// LanguageName maps ISO codes to English display names for the UI. Codes with
+// no entry here (e.g. the model's "na") fall back to the code itself at the
+// API layer; the model doesn't care what we label them.
 var LanguageName = map[string]string{
 	"ar": "Arabic", "bg": "Bulgarian", "cs": "Czech", "da": "Danish",
 	"de": "German", "el": "Greek", "en": "English", "es": "Spanish",

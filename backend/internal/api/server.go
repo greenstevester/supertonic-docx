@@ -10,6 +10,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+
+	"github.com/yourorg/supertonic-docx/internal/tts"
 )
 
 // ServerOpts is what the cmd/server wires together.
@@ -75,26 +77,13 @@ type langEntry struct {
 }
 
 func catalogueLangs(codes []string) []langEntry {
-	// Import cycle guard: we can't import tts here for LanguageName because
-	// jobs.go already does. That's fine — the engine has the codes; we add
-	// names via the simple inline table below to avoid plumbing through.
-	names := map[string]string{
-		"ar": "Arabic", "bg": "Bulgarian", "cs": "Czech", "da": "Danish",
-		"de": "German", "el": "Greek", "en": "English", "es": "Spanish",
-		"et": "Estonian", "fi": "Finnish", "fr": "French", "hi": "Hindi",
-		"hr": "Croatian", "hu": "Hungarian", "id": "Indonesian", "it": "Italian",
-		"ja": "Japanese", "ko": "Korean", "lt": "Lithuanian", "lv": "Latvian",
-		"nl": "Dutch", "pl": "Polish", "pt": "Portuguese", "ro": "Romanian",
-		"ru": "Russian", "sk": "Slovak", "sl": "Slovenian", "sv": "Swedish",
-		"tr": "Turkish", "uk": "Ukrainian", "vi": "Vietnamese",
-	}
 	out := make([]langEntry, 0, len(codes))
 	for _, c := range codes {
-		n, ok := names[c]
-		if !ok {
-			n = c
+		name, ok := tts.LanguageName[c]
+		if !ok || name == "" {
+			name = c
 		}
-		out = append(out, langEntry{Code: c, Name: n})
+		out = append(out, langEntry{Code: c, Name: name})
 	}
 	return out
 }
