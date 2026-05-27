@@ -9,11 +9,6 @@ Two ways to use it, both from the same Docker Compose stack:
 1. **Web UI** — drag a `.docx` into the browser, pick voices + languages, get download links.
 2. **Watched folder** — drop a `.docx` into `./inbox/`, audio appears in `./outbox/`.
 
-> ⚠️ **Read this before you expect audio:** the ONNX inference call is currently **stubbed** —
-> it emits *silence*. Everything else (parsing, jobs, stitching, API, UI, Docker) is real and
-> works end-to-end, so you can run the whole pipeline today and it'll produce playable WAVs that
-> are silent. Wiring in real audio is one function. See **[Current status](#current-status)**.
-
 ---
 
 ## Prerequisites
@@ -64,10 +59,10 @@ That's the whole setup. You now have:
 
 To stop: `docker compose down`.
 
-**What "working" looks like right now:** upload a `.docx`, watch the progress bar tick to 100%,
-click through to per-paragraph WAVs and a stitched `full.wav`. They play as **silence** — that's
-expected until the inference stub is replaced (see [Current status](#current-status)). If you
-see silent WAVs, setup is correct.
+**What "working" looks like:** upload a `.docx`, watch the progress bar tick to 100%,
+click through to per-paragraph WAVs and a stitched `full.wav` — and hear real speech.
+If audio comes back silent, the engine now fails the job loudly (Tier-0 guard) rather
+than producing silent files; check that `./assets` was populated by `fetch-model.sh`.
 
 ### Setup (local, without Docker)
 
@@ -133,8 +128,8 @@ the same image runs unchanged under Docker Compose.
 - **The Engine seam.** Everything Supertonic/ONNX-specific is isolated in
   `internal/tts/supertonic.go`. The `api`, `docx`, and `audio` packages depend on the
   `tts.Engine` type, never on ONNX directly. This is deliberate: you can swap the inference
-  backend (real ONNX, Python SDK over gRPC, MNN for embedded) by editing one file. **This is also
-  the single stubbed seam** — see [Current status](#current-status).
+  backend (real ONNX, Python SDK over gRPC, MNN for embedded) by editing one file.
+  This seam is what let the inference backend be swapped in cleanly.
 - **Jobs live in memory; disk is the source of truth.** A job is `1 docx × N voices × M langs`,
   producing N×M output bundles. Job state is held in RAM only; the WAVs on disk are authoritative.
   A restart mid-job orphans some half-written files harmlessly (all under a `job-<id>/` dir). No
@@ -181,7 +176,8 @@ Environment variables (set in `docker-compose.yml`, or exported for a local run)
 
 | Var | Default | Meaning |
 |---|---|---|
-| `SUPERTONIC_ASSETS` | `/app/assets` | Path to ONNX model + voice presets |
+| `SUPERTONIC_ASSETS` | `/app/assets` | Path to assets (onnx/ + voice_styles/) |
+| `ONNXRUNTIME_LIB_PATH` | `/usr/local/lib/libonnxruntime.so` | Path to the ONNX Runtime C library (set in the image) |
 | `SUPERTONIC_INBOX`  | `/app/inbox`  | Watched folder (set to empty string to disable the watcher) |
 | `SUPERTONIC_OUTBOX` | `/app/outbox` | Where audio is written |
 | `SUPERTONIC_FRONTEND` | `/app/frontend` | Static web-UI files |
@@ -245,30 +241,28 @@ from this.
 ## Voices & languages
 
 - **Voices:** Supertonic 3 ships preset styles `M1 M2 M3 M4 M5 F1 F2 F3 F4 F5`. The actual set is
-  discovered at runtime from `assets/voices/` — drop new voice files in and they appear, no code
-  change. (If assets are missing, the engine falls back to the preset list so the UI still loads.)
-- **Languages:** 31 codes baked into the model — see `backend/internal/tts/languages.go` for the
-  canonical list, or the [model card](https://huggingface.co/Supertone/supertonic-3#supported-languages).
+  discovered at runtime from `assets/voice_styles/*.json` (voice name = filename without `.json`);
+  drop new ones in and they appear. (If assets are missing, the engine falls back to the preset list so the UI still loads.)
+- **Languages:** supplied by the model (`AvailableLangs` in the vendored engine); the API exposes
+  them via `/api/catalogue`.
 
 ---
 
-## Current status
+## Status
 
-This repo is a complete, working scaffold of the **pipeline**: docx parsing, paragraph chunking,
-job orchestration, WAV stitching, the HTTP API, the folder watcher, the web UI, and the Docker
-packaging are all real.
+Inference is live: a vendored copy of Supertone's upstream Go engine
+(`backend/internal/tts/supertonic_native/`, MIT — see its `VENDORED.md`) runs the
+4-model Supertonic 3 ONNX pipeline (`text_encoder → duration_predictor →
+vector_estimator → vocoder`) in-process via
+[`onnxruntime_go`](https://github.com/yalue/onnxruntime_go).
 
-**The ONNX inference call itself is stubbed.** `backend/internal/tts/supertonic.go` contains a
-`synthesizeOne` function that currently returns silence with a fake duration proportional to the
-input text length. This lets you build, run, and exercise the end-to-end pipeline today — drop a
-docx in, watch the progress bar tick, click through to per-paragraph WAVs (which play as silence).
+**Native dependency:** the ONNX Runtime C library. The Docker image bundles
+v1.16.0 (aarch64) at `/usr/local/lib/libonnxruntime.so` and sets
+`ONNXRUNTIME_LIB_PATH`. For a bare local run, install ONNX Runtime and point
+`ONNXRUNTIME_LIB_PATH` at the library (macOS: `brew install onnxruntime`).
 
-To wire in real audio, that one function needs to call into the upstream Supertonic Go example
-([github.com/supertone-inc/supertonic/go](https://github.com/supertone-inc/supertonic/tree/main/go)),
-which uses [`onnxruntime_go`](https://github.com/yalue/onnxruntime_go). The `SUPERTONIC:` TODO
-comments in `supertonic.go` describe exactly what goes where — a few dozen lines of session setup
-and a tensor unpack. The seam is deliberate so you can swap implementations without touching the
-rest of the code. Once that's in, the rest of the system Just Works.
+**Verification:** see `backend/eval/README.md` for the three eval tiers
+(audio sanity, seed-pinned parity, Whisper WER/CER).
 
 ---
 
@@ -279,11 +273,11 @@ backend/             Go service (Gin HTTP + folder watcher + TTS pipeline)
   cmd/server/        main.go (config + wiring) + watcher.go (inbox watcher)
   internal/api/      HTTP handlers + in-memory job orchestrator
   internal/docx/     .docx → []Paragraph (plain text)
-  internal/tts/      Supertonic Engine (the stubbed ONNX seam) + language catalogue
+  internal/tts/      Supertonic Engine (real ONNX inference) + vendored engine + language catalogue
   internal/audio/    WAV concatenation + silence insertion
 frontend/            Static drop-zone UI (no build step, vanilla JS)
 scripts/             fetch-model.sh (pulls the model from Hugging Face)
-assets/              Supertonic 3 ONNX + voice presets (gitignored — fetched)
+assets/              onnx/ (4 models + tts.json + unicode_indexer.json) + voice_styles/*.json (gitignored — fetched)
 inbox/               Drop .docx here for watched-folder mode
 outbox/              Generated audio
 docker-compose.yml

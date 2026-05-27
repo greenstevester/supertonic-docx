@@ -30,5 +30,10 @@ fi
 
 echo
 echo "Done. Assets live at: $DEST"
-echo "Contents:"
-ls -lh "$DEST" | sed 's/^/  /'
+for p in onnx/tts.json onnx/unicode_indexer.json onnx/text_encoder.onnx voice_styles; do
+  if [ -e "$DEST/$p" ]; then
+    echo "  ✓ $p"
+  else
+    echo "  ✗ MISSING: $p  (asset layout may differ from expectations — check the HF repo tree)"
+  fi
+done

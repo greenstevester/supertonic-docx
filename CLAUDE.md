@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## The one thing to know first
 
-**TTS inference is stubbed.** `backend/internal/tts/supertonic.go` → `synthesizeOne()`
-returns *silence* (a zero-filled PCM buffer whose length is faked from the text length).
-Every other part of the system is real and runs end-to-end — docx parsing, paragraph
-chunking, job orchestration, WAV stitching, the HTTP API, the folder watcher, the web UI,
-Docker packaging — so you can drop a `.docx` in and watch the whole pipeline work, but the
-audio plays as silence until that one function is wired to the real ONNX session. The doc
-comment at the top of `supertonic.go` (and the `SUPERTONIC:` TODO markers inside it) describe
-exactly what to replace and the expected tensor shapes.
+**TTS inference is real.** `backend/internal/tts/supertonic.go` drives a vendored copy of
+Supertone's upstream Go engine (`internal/tts/supertonic_native/`, MIT) running the 4-model
+Supertonic 3 ONNX pipeline via `yalue/onnxruntime_go`. That binding dlopens the ONNX Runtime
+C library at runtime (`ONNXRUNTIME_LIB_PATH`, default `/usr/local/lib/libonnxruntime.so`;
+bundled v1.16.0 aarch64 in the image). Assets live under `assets/onnx/` (4 `.onnx` + `tts.json`
++ `unicode_indexer.json`) and `assets/voice_styles/*.json`. The `tts.Engine` interface is the
+seam: `api/` and `audio/` never see ONNX types. Evals (audio sanity, seed parity, Whisper WER)
+are in `backend/eval/` — see `backend/eval/README.md`.
 
 ## Commands
 
@@ -27,7 +27,7 @@ docker compose down
 go build -o server ./cmd/server
 go vet ./...
 gofmt -l .                     # list unformatted files (none should print)
-go test ./...                  # no tests exist yet; this is the command to use when adding them
+go test ./...                  # offline unit tests (tts, audiocheck, eval/wer); model evals are tagged `model_evals` and run separately — see backend/eval/README.md
 ```
 
 There is no frontend build step — `frontend/` is vanilla JS/HTML/CSS served as static files.
@@ -99,13 +99,10 @@ actually keys output dirs by `job-<uuid>`.)
 
 ### Voices vs. languages
 
-- **Voices** are discovered at runtime from `assets/voices/*.{bin,npy,onnx}`
+- **Voices** are discovered at runtime from `assets/voice_styles/*.json`
   (`Engine.discoverVoices`). If the assets dir is missing, it falls back to a hardcoded
   `M1–M5, F1–F5` so the UI is usable before assets are fetched.
-- **Languages** are a hardcoded list of 31 ISO codes in `internal/tts/languages.go` (baked in
-  so the binary is self-contained). There's also a duplicated code→name table in
-  `api/server.go` (`catalogueLangs`) — kept inline there to dodge an import cycle, so if you
-  add a language, update **both** `languages.go` and that map.
+- Languages come from the vendored engine's `AvailableLangs` (`languages.go` wraps it); display names live in `tts.LanguageName`, reused by `api/server.go` — no duplication.
 
 ## Repo-specific gotchas
 
@@ -119,6 +116,6 @@ actually keys output dirs by `job-<uuid>`.)
   the README clone URL has `YOUR-USER`. Rename consistently if this gets a real home.
 - **`/files/` has a path-traversal guard** (`serveFile` in `server.go`) — keep it if you touch
   static serving.
-- **WAV format is 16-bit PCM, mono, 44.1 kHz** throughout (`encodeWAV` in `supertonic.go`).
+- **WAV format is 16-bit PCM, mono; sample rate from `tts.json` (`AE.SampleRate`)**, threaded through `encodeWAV`.
   `Concatenate` rejects format mismatches, so changing the sample rate/channels means changing
   it in one place and everything downstream follows.
