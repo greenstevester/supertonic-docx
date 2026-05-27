@@ -10,6 +10,8 @@
 # Go build artefacts.
 /backend/server
 /backend/cmd/server/server
+/backend/audiocheck
+/backend/wer
 
 # IDE clutter.
 .idea/
