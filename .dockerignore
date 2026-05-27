@@ -1,0 +1,12 @@
+.git
+.gitignore
+.idea
+.DS_Store
+**/.DS_Store
+assets
+inbox
+outbox
+examples
+docs
+*.log
+backend/server

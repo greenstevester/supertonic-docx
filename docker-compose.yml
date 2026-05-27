@@ -17,6 +17,7 @@ services:
       dockerfile: Dockerfile
     image: supertonic-docx:latest
     container_name: supertonic-docx
+    platform: linux/arm64
     restart: unless-stopped
     ports:
       - "8787:8080"
