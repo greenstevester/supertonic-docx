@@ -1,0 +1,5 @@
+{
+  "en": { "metric": "wer", "max": 0.15 },
+  "de": { "metric": "wer", "max": 0.20 },
+  "ja": { "metric": "cer", "max": 0.15 }
+}

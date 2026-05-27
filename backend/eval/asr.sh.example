@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# asr.sh — transcribe $1 (a WAV) in language $2, print transcript to stdout.
+# Copy to asr.sh and adapt to YOUR Whisper install. Example: whisper.cpp.
+set -euo pipefail
+WAV="$1"
+LANG="$2"
+MODEL="${WHISPER_MODEL:-$HOME/whisper.cpp/models/ggml-large-v3.bin}"
+
+# whisper.cpp: -nt = no timestamps, prints plain text to stdout.
+whisper-cli -m "$MODEL" -l "$LANG" -nt -f "$WAV" 2>/dev/null
+
+# --- OpenAI whisper (Python) alternative ---
+# whisper "$WAV" --language "$LANG" --model small --output_format txt --output_dir /tmp/whisper-out >/dev/null 2>&1
+# cat "/tmp/whisper-out/$(basename "${WAV%.wav}").txt"

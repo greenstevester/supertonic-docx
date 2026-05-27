@@ -1,0 +1,11 @@
+[
+  { "id": "en-m1", "lang": "en", "voice": "M1", "text": "The quick brown fox jumps over the lazy dog near the riverbank." },
+  { "id": "en-f1", "lang": "en", "voice": "F1", "text": "She sells seashells by the seashore on a bright summer morning." },
+  { "id": "en-edge-num", "lang": "en", "voice": "M1", "text": "The invoice total was 1,250 dollars and 99 cents, due by March 3rd, 2026." },
+  { "id": "en-edge-abbr", "lang": "en", "voice": "F1", "text": "Dr. Smith, e.g., reviewed the Q3 report, i.e., the third-quarter results." },
+  { "id": "en-long", "lang": "en", "voice": "M1", "text": "Across the wide valley the morning mist slowly lifted, revealing fields of wheat that swayed gently in the breeze, while in the distance a single church bell rang out, marking the start of another quiet day in the countryside." },
+  { "id": "de-m1", "lang": "de", "voice": "M1", "text": "Der schnelle braune Fuchs springt über den faulen Hund am Flussufer." },
+  { "id": "de-f1", "lang": "de", "voice": "F1", "text": "Am frühen Morgen ging sie über die Brücke und kaufte frisches Brot." },
+  { "id": "ja-m1", "lang": "ja", "voice": "M1", "text": "今日はとても良い天気なので、公園を散歩しました。" },
+  { "id": "ja-f1", "lang": "ja", "voice": "F1", "text": "新しい本を買って、家でゆっくり読みました。" }
+]
