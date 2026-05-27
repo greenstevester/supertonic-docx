@@ -1,34 +1,14 @@
 // Package tts wraps Supertonic 3 ONNX inference behind a small, stable
-// interface that the rest of the service can depend on.
+// interface the rest of the service depends on.
 //
-// Why a wrapper?
+// The tensor orchestration lives in the vendored upstream package
+// internal/tts/supertonic_native (see its VENDORED.md). This file is the
+// seam: everything Supertonic-specific is reachable only through Engine, so
+// the api/ and audio/ packages never import ONNX types.
 //
-// The upstream supertonic Go example (github.com/supertone-inc/supertonic/go)
-// is shipped as an `example_onnx.go` program, not a reusable library. Its
-// internals — tokenizer setup, voice-style loading, ONNX session lifecycle —
-// are convenient to call from main() but awkward to embed in a service.
-//
-// This file is the seam: everything Supertonic-specific lives here. If the
-// upstream API changes (or moves to a real library), only this file needs
-// updating. The api/ and audio/ packages talk to Engine, not to ONNX.
-//
-// Wiring the real model in
-// ------------------------
-// The actual ONNX session calls are stubbed with TODOs marked SUPERTONIC.
-// To wire them up:
-//
-//  1. Vendor the upstream files into internal/tts/supertonic_native/
-//     (helper.go, tokenizer helpers, and any phonemiser tables).
-//  2. Replace the stub in synthesizeOne with calls into that package.
-//  3. The shape of the ONNX inputs/outputs is documented at
-//     https://github.com/supertone-inc/supertonic/blob/main/go/example_onnx.go
-//     and is stable between Supertonic 2 and 3 — only the asset filenames
-//     differ. The model expects (text-tokens, voice-style-embedding, lang-id)
-//     and returns a float32 PCM waveform at 44.1 kHz.
-//
-// Until that's done, Synthesize returns a short silent WAV so the end-to-end
-// pipeline (docx → API → file links) can be developed and tested without
-// having the model present.
+// ONNX Runtime sessions are not goroutine-safe, so Synthesize serialises all
+// inference behind e.mu. The engine is loaded once at startup and shared
+// across every HTTP request and watcher event.
 package tts
 
 import (
@@ -40,56 +20,113 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	ort "github.com/yalue/onnxruntime_go"
+
+	"github.com/yourorg/supertonic-docx/internal/audiocheck"
+	"github.com/yourorg/supertonic-docx/internal/tts/supertonic_native"
 )
 
-// Engine is a loaded Supertonic model + voice/language catalogue.
-// Safe for concurrent use; synthesizeOne is serialised internally because
-// ONNX Runtime sessions are not goroutine-safe by default.
+// Hardcoded inference parameters (design decision: not user-configurable).
+const (
+	totalStep       = 8             // denoising steps (upstream default)
+	speed           = float32(1.05) // speech rate (upstream default)
+	chunkSilenceSec = float32(0.3)  // gap between sub-chunks of long text (upstream example default)
+)
+
+// Engine is a loaded Supertonic model + voice/language catalogue. Safe for
+// concurrent use; inference is serialised internally because ONNX Runtime
+// sessions are not goroutine-safe.
 type Engine struct {
 	assetsDir string
 
-	mu       sync.Mutex        // serialises ONNX session calls
+	mu     sync.Mutex // serialises ONNX session calls and the style cache
+	model  *supertonic_native.TextToSpeech
+	sr     int                                 // sample rate from tts.json (AE.SampleRate)
+	styles map[string]*supertonic_native.Style // voice name -> loaded style (lazy, cached)
+
 	voices   []string          // sorted, deduplicated
-	voiceMap map[string]string // voice name -> path to style file
-	langs    []string          // canonical 31 codes
+	voiceMap map[string]string // voice name -> voice_styles/<name>.json (empty when using fallback list)
+	langs    []string          // from vendored AvailableLangs
 }
 
 // NewEngine loads the model assets from assetsDir.
 //
-// Expected layout (matches the supertonic-3 HF repo):
+// Expected layout (Supertonic 3 HF repo):
 //
 //	assetsDir/
-//	  model.onnx              (or whatever the v3 asset bundle names it)
-//	  voices/
-//	    M1.bin
-//	    F1.bin
-//	    ...
-//	  tokenizer/...
+//	  onnx/
+//	    tts.json
+//	    unicode_indexer.json
+//	    text_encoder.onnx  duration_predictor.onnx
+//	    vector_estimator.onnx  vocoder.onnx
+//	  voice_styles/
+//	    M1.json  F1.json  ...
 func NewEngine(assetsDir string) (*Engine, error) {
 	if _, err := os.Stat(assetsDir); err != nil {
 		return nil, fmt.Errorf("assets dir %s: %w", assetsDir, err)
 	}
 
+	// Initialise ONNX Runtime once. The vendored helper resolves the library
+	// from ONNXRUNTIME_LIB_PATH (fallback /usr/local/lib/libonnxruntime.so).
+	if err := supertonic_native.InitializeONNXRuntime(); err != nil {
+		return nil, fmt.Errorf("init ONNX Runtime (set ONNXRUNTIME_LIB_PATH if libonnxruntime is not on the default path): %w", err)
+	}
+
+	onnxDir := filepath.Join(assetsDir, "onnx")
+	cfg, err := supertonic_native.LoadCfgs(onnxDir)
+	if err != nil {
+		return nil, fmt.Errorf("load %s: %w", filepath.Join(onnxDir, "tts.json"), err)
+	}
+
+	// LoadTextToSpeech opens the 4 ONNX sessions and loads unicode_indexer.json
+	// internally; useGPU is always false (CPU-only, per design).
+	model, err := supertonic_native.LoadTextToSpeech(onnxDir, false, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open ONNX sessions in %s: %w", onnxDir, err)
+	}
+
 	e := &Engine{
 		assetsDir: assetsDir,
+		model:     model,
+		sr:        model.SampleRate,
+		styles:    map[string]*supertonic_native.Style{},
 		voiceMap:  map[string]string{},
 		langs:     supportedLanguages(),
 	}
-
 	if err := e.discoverVoices(); err != nil {
+		model.Destroy()
 		return nil, err
 	}
-
-	// SUPERTONIC: load model.onnx into an ONNX Runtime session here.
-	// e.session, err = onnxruntime.NewSession(filepath.Join(assetsDir, "model.onnx"), ...)
-
 	return e, nil
 }
 
-// Close releases any held resources (ONNX session, etc.).
+// Close releases the ONNX sessions, cached style tensors, and the ORT env.
 func (e *Engine) Close() error {
-	// SUPERTONIC: e.session.Destroy()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, st := range e.styles {
+		destroyStyle(st)
+	}
+	e.styles = map[string]*supertonic_native.Style{}
+	if e.model != nil {
+		e.model.Destroy()
+		e.model = nil
+	}
+	ort.DestroyEnvironment()
 	return nil
+}
+
+func destroyStyle(st *supertonic_native.Style) {
+	if st == nil {
+		return
+	}
+	if st.TtlTensor != nil {
+		st.TtlTensor.Destroy()
+	}
+	if st.DpTensor != nil {
+		st.DpTensor.Destroy()
+	}
 }
 
 // Voices returns the available voice presets, sorted.
@@ -99,15 +136,14 @@ func (e *Engine) Voices() []string {
 	return out
 }
 
-// Languages returns the supported language codes, sorted.
+// Languages returns the supported language codes.
 func (e *Engine) Languages() []string {
 	out := make([]string, len(e.langs))
 	copy(out, e.langs)
 	return out
 }
 
-// HasVoice / HasLang are used by the API layer to validate requests
-// before kicking off a (potentially long) job.
+// HasVoice / HasLang validate requests before a (potentially long) job starts.
 func (e *Engine) HasVoice(v string) bool { _, ok := e.voiceMap[v]; return ok }
 func (e *Engine) HasLang(l string) bool {
 	for _, c := range e.langs {
@@ -118,8 +154,8 @@ func (e *Engine) HasLang(l string) bool {
 	return false
 }
 
-// Synthesize generates a WAV (16-bit PCM) for one paragraph in one voice/lang.
-// Returns the raw .wav bytes ready to write to disk.
+// Synthesize generates a 16-bit PCM mono WAV for one paragraph in one
+// voice/lang. Returns the raw .wav bytes ready to write to disk.
 func (e *Engine) Synthesize(text, voice, lang string) ([]byte, error) {
 	if !e.HasVoice(voice) {
 		return nil, fmt.Errorf("unknown voice %q", voice)
@@ -142,84 +178,94 @@ func (e *Engine) Synthesize(text, voice, lang string) ([]byte, error) {
 }
 
 // synthesizeOne is the only function that touches Supertonic directly.
-// Everything above it is generic; everything below is, too. Swap this body
-// out when wiring the real ONNX session.
+// Caller must hold e.mu.
 func (e *Engine) synthesizeOne(text, voice, lang string) ([]float32, int, error) {
-	// SUPERTONIC: real implementation:
-	//   1. tokens := tokenizer.Encode(text, lang)
-	//   2. style  := loadStyle(e.voiceMap[voice])
-	//   3. langID := langCodeToID[lang]
-	//   4. outs, err := e.session.Run(map[string]any{
-	//          "tokens": tokens, "style": style, "lang_id": langID,
-	//      })
-	//   5. return outs["waveform"].([]float32), 44100, nil
-
-	// Stub: 250 ms of silence at 44.1 kHz so the pipeline runs end-to-end.
-	const sr = 44100
-	durSec := 0.25 + float64(len(text))*0.06 // rough fake "duration"
-	n := int(durSec * float64(sr))
-	if n > sr*30 {
-		n = sr * 30
+	style, err := e.styleFor(voice)
+	if err != nil {
+		return nil, 0, err
 	}
-	return make([]float32, n), sr, nil
+	samples, _, err := e.model.Call(text, lang, style, totalStep, speed, chunkSilenceSec)
+	if err != nil {
+		return nil, 0, fmt.Errorf("inference: %w", err)
+	}
+	// Tier-0 runtime guard: turn a silent/degenerate result into a loud error
+	// instead of a silently-passing job.
+	if err := audiocheck.Guard(samples, e.sr); err != nil {
+		return nil, 0, fmt.Errorf("degenerate audio (voice=%s lang=%s text=%q): %w", voice, lang, truncate(text, 60), err)
+	}
+	return samples, e.sr, nil
 }
 
-// discoverVoices reads assetsDir/voices/ and registers anything that looks
-// like a voice file (M1.bin, F1.bin, ...). This avoids hard-coding the
-// preset list — when Supertonic ships new voices, dropping them into the
-// assets dir is enough.
-func (e *Engine) discoverVoices() error {
-	voicesDir := filepath.Join(e.assetsDir, "voices")
-	entries, err := os.ReadDir(voicesDir)
+// styleFor lazily loads and caches a voice's style tensors. Caller holds e.mu.
+func (e *Engine) styleFor(voice string) (*supertonic_native.Style, error) {
+	if st, ok := e.styles[voice]; ok {
+		return st, nil
+	}
+	path := e.voiceMap[voice]
+	if path == "" {
+		return nil, fmt.Errorf("voice %q has no style file (are assets fetched into voice_styles/?)", voice)
+	}
+	st, err := supertonic_native.LoadVoiceStyle([]string{path}, false)
 	if err != nil {
-		// Not fatal — let the engine come up with a fallback voice list
-		// so the UI is usable even before assets are fully downloaded.
-		// The API layer's job validation will catch the mismatch.
-		for _, v := range fallbackVoices() {
-			e.voices = append(e.voices, v)
-			e.voiceMap[v] = "" // no path; synthesizeOne stub doesn't need it
-		}
-		sort.Strings(e.voices)
+		return nil, fmt.Errorf("load voice style %s: %w", path, err)
+	}
+	e.styles[voice] = st
+	return st, nil
+}
+
+// discoverVoices reads assetsDir/voice_styles/*.json; voice name = filename
+// without ".json". Falls back to a hardcoded preset list only when the dir is
+// missing, so the UI is usable before assets are fetched.
+func (e *Engine) discoverVoices() error {
+	dir := filepath.Join(e.assetsDir, "voice_styles")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		e.useFallbackVoices()
 		return nil
 	}
-
 	seen := map[string]bool{}
 	for _, ent := range entries {
-		if ent.IsDir() {
+		if ent.IsDir() || filepath.Ext(ent.Name()) != ".json" {
 			continue
 		}
-		name := ent.Name()
-		ext := filepath.Ext(name)
-		if ext != ".bin" && ext != ".npy" && ext != ".onnx" {
-			continue
-		}
-		voice := strings.TrimSuffix(name, ext)
+		voice := strings.TrimSuffix(ent.Name(), ".json")
 		if seen[voice] {
 			continue
 		}
 		seen[voice] = true
 		e.voices = append(e.voices, voice)
-		e.voiceMap[voice] = filepath.Join(voicesDir, name)
+		e.voiceMap[voice] = filepath.Join(dir, ent.Name())
 	}
 	sort.Strings(e.voices)
-
 	if len(e.voices) == 0 {
-		// Same fallback path as above.
-		for _, v := range fallbackVoices() {
-			e.voices = append(e.voices, v)
-			e.voiceMap[v] = ""
-		}
-		sort.Strings(e.voices)
+		e.useFallbackVoices()
 	}
 	return nil
+}
+
+func (e *Engine) useFallbackVoices() {
+	for _, v := range fallbackVoices() {
+		e.voices = append(e.voices, v)
+		e.voiceMap[v] = "" // no style file; styleFor will reject synthesis
+	}
+	sort.Strings(e.voices)
 }
 
 func fallbackVoices() []string {
 	return []string{"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}
 }
 
-// encodeWAV writes a 16-bit PCM mono WAV file in memory.
-// Float samples are clamped to [-1, 1] then scaled to int16.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// encodeWAV writes a 16-bit PCM mono WAV in memory. Float samples are clamped
+// to [-1, 1] then scaled to int16. The sample rate is supplied by the caller
+// (from tts.json), not hardcoded.
 func encodeWAV(samples []float32, sampleRate int) []byte {
 	const (
 		bitsPerSample = 16
@@ -242,22 +288,19 @@ func encodeWAV(samples []float32, sampleRate int) []byte {
 		w(b[:]...)
 	}
 
-	// RIFF header
 	w([]byte("RIFF")...)
 	wU32(uint32(36 + dataSize))
 	w([]byte("WAVE")...)
 
-	// fmt chunk
 	w([]byte("fmt ")...)
-	wU32(16) // PCM chunk size
-	wU16(1)  // PCM format
+	wU32(16)
+	wU16(1)
 	wU16(uint16(numChannels))
 	wU32(uint32(sampleRate))
 	wU32(uint32(byteRate))
 	wU16(uint16(blockAlign))
 	wU16(uint16(bitsPerSample))
 
-	// data chunk
 	w([]byte("data")...)
 	wU32(uint32(dataSize))
 	for _, s := range samples {
