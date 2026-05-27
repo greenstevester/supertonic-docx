@@ -106,7 +106,7 @@ func (e *Engine) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, st := range e.styles {
-		destroyStyle(st)
+		st.Destroy()
 	}
 	e.styles = map[string]*supertonic_native.Style{}
 	if e.model != nil {
@@ -115,18 +115,6 @@ func (e *Engine) Close() error {
 	}
 	ort.DestroyEnvironment()
 	return nil
-}
-
-func destroyStyle(st *supertonic_native.Style) {
-	if st == nil {
-		return
-	}
-	if st.TtlTensor != nil {
-		st.TtlTensor.Destroy()
-	}
-	if st.DpTensor != nil {
-		st.DpTensor.Destroy()
-	}
 }
 
 // Voices returns the available voice presets, sorted.
