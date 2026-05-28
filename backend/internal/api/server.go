@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -45,6 +46,9 @@ func NewServer(opts ServerOpts) http.Handler {
 	r.GET("/api/catalogue", h.catalogue)
 	r.POST("/api/synthesize", h.synthesize)
 	r.GET("/api/jobs/:id", h.getJob)
+	r.POST("/api/jobs/:id/pause", h.pauseJob)
+	r.POST("/api/jobs/:id/resume", h.resumeJob)
+	r.POST("/api/jobs/:id/finalize", h.finalizeJob)
 
 	// Static file serving for generated audio. We use a raw http.FileServer
 	// because Gin's StaticFS doesn't give us the path-walking we want here,
@@ -108,6 +112,16 @@ func (h *handlers) synthesize(c *gin.Context) {
 		return
 	}
 
+	pauseEvery := 0
+	if s := strings.TrimSpace(c.Request.FormValue("pause_every")); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "pause_every must be a non-negative integer"})
+			return
+		}
+		pauseEvery = n
+	}
+
 	// Save upload to a temp file inside outbox so we don't need a separate
 	// upload area. Cleanup is the worker's responsibility (or just leave
 	// it: it's evidence of what the user submitted).
@@ -128,7 +142,7 @@ func (h *handlers) synthesize(c *gin.Context) {
 	}
 	tmp.Close()
 
-	job, err := h.opts.Jobs.Submit(tmp.Name(), hdr.Filename, voices, langs, 0)
+	job, err := h.opts.Jobs.Submit(tmp.Name(), hdr.Filename, voices, langs, pauseEvery)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -143,6 +157,48 @@ func (h *handlers) synthesize(c *gin.Context) {
 func (h *handlers) getJob(c *gin.Context) {
 	id := c.Param("id")
 	job, ok := h.opts.Jobs.Get(id)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+	c.JSON(http.StatusOK, job)
+}
+
+func (h *handlers) pauseJob(c *gin.Context) {
+	if err := h.opts.Jobs.Pause(c.Param("id")); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	h.respondJob(c)
+}
+
+func (h *handlers) resumeJob(c *gin.Context) {
+	var body struct {
+		All bool `json:"all"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+			return
+		}
+	}
+	if err := h.opts.Jobs.Resume(c.Param("id"), body.All); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	h.respondJob(c)
+}
+
+func (h *handlers) finalizeJob(c *gin.Context) {
+	if err := h.opts.Jobs.Finalize(c.Param("id")); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	h.respondJob(c)
+}
+
+func (h *handlers) respondJob(c *gin.Context) {
+	job, ok := h.opts.Jobs.Get(c.Param("id"))
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 		return
