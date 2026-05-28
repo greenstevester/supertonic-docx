@@ -179,6 +179,9 @@ async function submit() {
     return;
   }
   const { job_id } = await res.json();
+  // Upload is done; the job panel below owns status from here. Clear the
+  // action-note so "Uploading…" doesn't linger over a running job.
+  $('action-note').textContent = '';
   state.jobId = job_id;
   $('job-id').textContent = job_id.slice(0, 8);
   $('job-panel').hidden = false;
