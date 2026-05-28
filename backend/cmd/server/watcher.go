@@ -71,7 +71,7 @@ func runWatcher(ctx context.Context, cfg config, jobs *api.JobStore) {
 				}
 				delete(pending, path)
 				log.Printf("watcher: submitting %s", path)
-				_, err := jobs.SubmitFromPath(path, cfg.DefaultVoices, cfg.DefaultLangs)
+				_, err := jobs.SubmitFromPath(path, cfg.DefaultVoices, cfg.DefaultLangs, 0)
 				if err != nil {
 					log.Printf("watcher: submit %s: %v", path, err)
 				}

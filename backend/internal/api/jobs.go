@@ -22,6 +22,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,9 +41,15 @@ type JobStatus string
 const (
 	StatusQueued  JobStatus = "queued"
 	StatusRunning JobStatus = "running"
+	StatusPaused  JobStatus = "paused" // auto-pause after every N bundles (pause_every > 0)
 	StatusDone    JobStatus = "done"
 	StatusError   JobStatus = "error"
 )
+
+// errJobFinalized is returned from runInner when the worker exits cleanly via
+// a user finalize signal (running or paused). run() will translate it to
+// StatusDone — wiring lands in the worker-restructure task (T4).
+var errJobFinalized = errors.New("job finalized by user")
 
 // Output describes one voice × language bundle within a job.
 type Output struct {
@@ -60,6 +67,7 @@ type Job struct {
 	Progress   Progress  `json:"progress"`
 	Voices     []string  `json:"voices"`
 	Langs      []string  `json:"langs"`
+	PauseEvery int       `json:"pause_every,omitempty"` // 0 = no auto-pause
 	Outputs    []Output  `json:"outputs"`
 	Error      string    `json:"error,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -72,6 +80,21 @@ type Progress struct {
 	Total int `json:"total"`
 }
 
+// jobControl carries pause/resume signaling for one in-flight job. Read/written
+// under JobStore.mu, except the resume channel which is buffered (cap 1) so
+// the API never blocks the worker (and vice versa).
+type jobControl struct {
+	pauseEvery        int  // mutated to 0 by resume{all:true}
+	pauseRequested    bool // set by /pause
+	finalizeRequested bool // set by /finalize while running
+	resume            chan resumeReq
+}
+
+type resumeReq struct {
+	all      bool // disable auto-pause for the remainder
+	finalize bool // end the job instead of continuing
+}
+
 // JobStore is the orchestrator. All access goes through methods (no direct
 // map iteration outside this file), so the lock discipline stays simple.
 type JobStore struct {
@@ -79,8 +102,9 @@ type JobStore struct {
 	engine    Engine
 	paraGapMs int
 
-	mu   sync.RWMutex
-	jobs map[string]*Job
+	mu       sync.RWMutex
+	jobs     map[string]*Job
+	controls map[string]*jobControl // transient; not serialised
 }
 
 func NewJobStore(outboxDir string, engine Engine, paraGapMs int) *JobStore {
@@ -89,13 +113,15 @@ func NewJobStore(outboxDir string, engine Engine, paraGapMs int) *JobStore {
 		engine:    engine,
 		paraGapMs: paraGapMs,
 		jobs:      map[string]*Job{},
+		controls:  map[string]*jobControl{},
 	}
 }
 
 // Submit accepts an already-uploaded .docx (path on disk) and the user's
 // requested voices/langs. It validates, creates a Job record, and kicks off
-// the worker goroutine.
-func (s *JobStore) Submit(docxPath, sourceName string, voices, langs []string) (*Job, error) {
+// the worker goroutine. pauseEvery > 0 enables auto-pause after every N
+// completed bundles; 0 disables auto-pause.
+func (s *JobStore) Submit(docxPath, sourceName string, voices, langs []string, pauseEvery int) (*Job, error) {
 	voices = dedupe(voices)
 	langs = dedupe(langs)
 	if len(voices) == 0 {
@@ -103,6 +129,9 @@ func (s *JobStore) Submit(docxPath, sourceName string, voices, langs []string) (
 	}
 	if len(langs) == 0 {
 		return nil, fmt.Errorf("at least one language required")
+	}
+	if pauseEvery < 0 {
+		return nil, fmt.Errorf("pause_every must be >= 0")
 	}
 	for _, v := range voices {
 		if !s.engine.HasVoice(v) {
@@ -121,11 +150,16 @@ func (s *JobStore) Submit(docxPath, sourceName string, voices, langs []string) (
 		Status:     StatusQueued,
 		Voices:     voices,
 		Langs:      langs,
+		PauseEvery: pauseEvery,
 		CreatedAt:  time.Now(),
 	}
 
 	s.mu.Lock()
 	s.jobs[job.ID] = job
+	s.controls[job.ID] = &jobControl{
+		pauseEvery: pauseEvery,
+		resume:     make(chan resumeReq, 1),
+	}
 	s.mu.Unlock()
 
 	go s.run(job, docxPath)
@@ -136,8 +170,24 @@ func (s *JobStore) Submit(docxPath, sourceName string, voices, langs []string) (
 // the filename from the path itself. The .docx is copied into the job's
 // output dir so the watcher can move/delete the inbox file without
 // racing with the worker.
-func (s *JobStore) SubmitFromPath(path string, voices, langs []string) (*Job, error) {
-	return s.Submit(path, filepath.Base(path), voices, langs)
+func (s *JobStore) SubmitFromPath(path string, voices, langs []string, pauseEvery int) (*Job, error) {
+	return s.Submit(path, filepath.Base(path), voices, langs, pauseEvery)
+}
+
+func (s *JobStore) deleteControls(id string) {
+	s.mu.Lock()
+	delete(s.controls, id)
+	s.mu.Unlock()
+}
+
+// getControl returns the live control struct for the given job, or nil if the
+// job has no active control entry. The struct's fields are mutable and must
+// only be read or written while holding s.mu — re-acquire it after this
+// returns, since the brief read-lock taken here is released on return.
+func (s *JobStore) getControl(id string) *jobControl {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.controls[id]
 }
 
 func (s *JobStore) Get(id string) (*Job, bool) {

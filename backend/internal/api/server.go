@@ -128,7 +128,7 @@ func (h *handlers) synthesize(c *gin.Context) {
 	}
 	tmp.Close()
 
-	job, err := h.opts.Jobs.Submit(tmp.Name(), hdr.Filename, voices, langs)
+	job, err := h.opts.Jobs.Submit(tmp.Name(), hdr.Filename, voices, langs, 0)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
