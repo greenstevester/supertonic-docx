@@ -153,6 +153,33 @@ function refreshTally() {
 
 function setupSubmit() {
   $('submit').addEventListener('click', submit);
+
+  $('job-controls').addEventListener('click', async (e) => {
+    const action = e.target.dataset.action;
+    if (!action || !state.jobId) return;
+    const id = state.jobId;
+    try {
+      if (action === 'pause') {
+        await fetch(`/api/jobs/${id}/pause`, { method: 'POST' });
+      } else if (action === 'resume') {
+        await fetch(`/api/jobs/${id}/resume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+      } else if (action === 'resume-all') {
+        await fetch(`/api/jobs/${id}/resume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ all: true }),
+        });
+      } else if (action === 'finalize') {
+        await fetch(`/api/jobs/${id}/finalize`, { method: 'POST' });
+      }
+    } catch (err) {
+      // The next poll will surface state; nothing else to do here.
+    }
+  });
 }
 
 async function submit() {
@@ -163,6 +190,10 @@ async function submit() {
   form.append('file', state.file);
   form.append('voices', [...state.selectedVoices].join(','));
   form.append('langs',  [...state.selectedLangs].join(','));
+  const pe = $('pause-every').value.trim();
+  if (pe !== '' && Number(pe) > 0) {
+    form.append('pause_every', pe);
+  }
 
   let res;
   try {
@@ -220,6 +251,8 @@ function renderJob(job) {
   $('job-progress-text').textContent =
     `${job.progress.done} / ${job.progress.total} paragraphs synthesised`;
 
+  renderControls(job);
+
   const outs = $('job-outputs');
   outs.innerHTML = '';
   for (const out of (job.outputs || [])) {
@@ -245,7 +278,10 @@ function renderBundle(out) {
   title.textContent = `${out.voice} · ${out.lang}`;
   const meta = document.createElement('span');
   meta.className = 'bundle-meta';
-  meta.textContent = `${out.paragraphs.length} paragraph${out.paragraphs.length === 1 ? '' : 's'}`;
+  const bytes = out.full_bytes || 0;
+  const dur = out.duration_sec || 0;
+  meta.textContent =
+    `${out.paragraphs.length}¶ · ${formatBytes(bytes)} · ${formatDuration(dur)}`;
   header.append(title, meta);
   wrap.appendChild(header);
 
@@ -269,4 +305,29 @@ function renderBundle(out) {
   wrap.appendChild(paras);
 
   return wrap;
+}
+
+function renderControls(job) {
+  const c = $('job-controls');
+  const running = job.status === 'running';
+  const paused  = job.status === 'paused';
+  c.hidden = !(running || paused);
+  c.querySelector('[data-action="pause"]').hidden       = !running;
+  c.querySelector('[data-action="resume"]').hidden      = !paused;
+  c.querySelector('[data-action="resume-all"]').hidden  = !paused;
+  c.querySelector('[data-action="finalize"]').hidden    = !(running || paused);
+}
+
+function formatBytes(b) {
+  if (!b) return '—';
+  if (b >= 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+
+function formatDuration(s) {
+  if (!s) return '—';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m > 0 ? `${m}m ${String(sec).padStart(2, '0')}s` : `${sec}s`;
 }

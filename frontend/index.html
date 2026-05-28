@@ -72,6 +72,15 @@
     </fieldset>
   </section>
 
+  <section class="block">
+    <h2>Pause every</h2>
+    <p class="block-sub">Process this many paragraphs, then pause for review. Leave blank for none.</p>
+    <label class="number-field">
+      <input id="pause-every" type="number" min="1" step="1" placeholder="e.g. 5">
+      <span>paragraphs</span>
+    </label>
+  </section>
+
   <section class="action">
     <button id="submit" class="submit" disabled>
       <span class="submit-label">Synthesize</span>
@@ -89,6 +98,13 @@
       <div class="job-progress-bar" id="job-progress-bar"></div>
     </div>
     <p class="job-progress-text" id="job-progress-text">0 / 0</p>
+
+    <div id="job-controls" class="job-controls" hidden>
+      <button type="button" data-action="pause" hidden>Stop</button>
+      <button type="button" data-action="resume" hidden>Resume</button>
+      <button type="button" data-action="resume-all" hidden>Finish all</button>
+      <button type="button" data-action="finalize" hidden>Finalize</button>
+    </div>
 
     <div class="job-outputs" id="job-outputs"></div>
     <p class="job-error" id="job-error" hidden></p>
