@@ -53,10 +53,12 @@ var errJobFinalized = errors.New("job finalized by user")
 
 // Output describes one voice × language bundle within a job.
 type Output struct {
-	Voice      string   `json:"voice"`
-	Lang       string   `json:"lang"`
-	FullURL    string   `json:"full"`       // /files/... link to stitched WAV
-	Paragraphs []string `json:"paragraphs"` // /files/... links, in order
+	Voice       string   `json:"voice"`
+	Lang        string   `json:"lang"`
+	FullURL     string   `json:"full"`         // /files/... link to stitched WAV
+	Paragraphs  []string `json:"paragraphs"`   // /files/... links, in order
+	FullBytes   int64    `json:"full_bytes"`   // size of full.wav on disk
+	DurationSec float64  `json:"duration_sec"` // total stitched audio length
 }
 
 // Job is the state we expose via the API. The actual audio bytes live on disk.
@@ -290,6 +292,12 @@ func (s *JobStore) synthesizeBundle(job *Job, jobDir, voice, lang string, paragr
 		return Output{}, fmt.Errorf("stitch: %w", err)
 	}
 
+	var fullBytes int64
+	if info, err := os.Stat(fullPath); err == nil {
+		fullBytes = info.Size()
+	}
+	durSec, _ := audio.Duration(fullPath) // non-fatal; 0 on failure
+
 	// Per-bundle manifest with durations — useful for downstream alignment.
 	if err := writeBundleManifest(bundleDir, paragraphs, paraPaths); err != nil {
 		// Non-fatal: log and continue. The audio is the real deliverable.
@@ -299,10 +307,12 @@ func (s *JobStore) synthesizeBundle(job *Job, jobDir, voice, lang string, paragr
 	}
 
 	return Output{
-		Voice:      voice,
-		Lang:       lang,
-		FullURL:    fileURL(s.outboxDir, fullPath),
-		Paragraphs: paraURLs,
+		Voice:       voice,
+		Lang:        lang,
+		FullURL:     fileURL(s.outboxDir, fullPath),
+		Paragraphs:  paraURLs,
+		FullBytes:   fullBytes,
+		DurationSec: durSec,
 	}, nil
 }
 
