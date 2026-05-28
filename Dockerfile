@@ -2,11 +2,13 @@
 
 # ---- build stage ----
 FROM golang:1.25-bookworm AS build
-ARG ONNXRUNTIME_VERSION=1.16.0
+ARG ONNXRUNTIME_VERSION=1.18.0
 WORKDIR /src
 
 # Fetch the ONNX Runtime native library (aarch64) to bundle into the runtime
-# image. The binding (yalue/onnxruntime_go) dlopens this at runtime.
+# image. The binding (yalue/onnxruntime_go v1.11.0) dlopens this at runtime and
+# requests ORT C API version 18, so the bundled library must be >= 1.18.0; the
+# binding is built against 1.18.0 headers exactly, so we pin that.
 RUN set -eux; \
     curl -fsSL -o /tmp/ort.tgz \
       "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-aarch64-${ONNXRUNTIME_VERSION}.tgz"; \
