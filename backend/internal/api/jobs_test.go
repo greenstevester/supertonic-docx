@@ -258,3 +258,90 @@ func TestPauseStitchesPartialFullWav(t *testing.T) {
 		t.Errorf("partial full.wav not on disk: %v", err)
 	}
 }
+
+func TestResumeContinuesAndRepausesAfterPauseEvery(t *testing.T) {
+	dir := t.TempDir()
+	eng := newBlockingFakeEngine()
+	store := NewJobStore(dir, eng, 0)
+	docxPath := writeTestDocx(t, []string{"p1", "p2", "p3", "p4", "p5"})
+
+	job, err := store.Submit(docxPath, "test.docx", []string{"M1"}, []string{"en"}, 2)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// First 2 paragraphs synthesize, then auto-pause.
+	releaseN(eng, 2)
+	mustReachStatus(t, store, job.ID, StatusPaused)
+	if j, _ := store.Get(job.ID); j.Progress.Done != 2 {
+		t.Errorf("expected Done=2 at first pause, got %d", j.Progress.Done)
+	}
+
+	// Resume (default re-applies pause_every).
+	if err := store.Resume(job.ID, false); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	releaseN(eng, 2)
+	mustReachStatus(t, store, job.ID, StatusPaused)
+	if j, _ := store.Get(job.ID); j.Progress.Done != 4 {
+		t.Errorf("expected Done=4 at second pause, got %d", j.Progress.Done)
+	}
+
+	// Final resume with all=true — runs to completion.
+	if err := store.Resume(job.ID, true); err != nil {
+		t.Fatalf("Resume(all): %v", err)
+	}
+	releaseN(eng, 1)
+	mustReachStatus(t, store, job.ID, StatusDone)
+}
+
+func TestFinalizeFromPausedEndsWithSavedPartial(t *testing.T) {
+	dir := t.TempDir()
+	eng := newBlockingFakeEngine()
+	store := NewJobStore(dir, eng, 0)
+	docxPath := writeTestDocx(t, []string{"p1", "p2", "p3", "p4", "p5"})
+
+	job, _ := store.Submit(docxPath, "test.docx", []string{"M1"}, []string{"en"}, 2)
+	releaseN(eng, 2)
+	mustReachStatus(t, store, job.ID, StatusPaused)
+
+	if err := store.Finalize(job.ID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	mustReachStatus(t, store, job.ID, StatusDone)
+
+	j, _ := store.Get(job.ID)
+	if j.Progress.Done != 2 {
+		t.Errorf("expected Done=2 (partial saved), got %d", j.Progress.Done)
+	}
+	if len(j.Outputs) != 1 || j.Outputs[0].FullBytes <= 44 {
+		t.Errorf("expected saved partial full.wav, got %+v", j.Outputs)
+	}
+}
+
+func TestFinalizeFromRunningEndsAtBoundary(t *testing.T) {
+	dir := t.TempDir()
+	eng := newBlockingFakeEngine()
+	store := NewJobStore(dir, eng, 0)
+	docxPath := writeTestDocx(t, []string{"p1", "p2", "p3", "p4"})
+
+	job, _ := store.Submit(docxPath, "test.docx", []string{"M1"}, []string{"en"}, 0)
+
+	releaseN(eng, 1) // p1 done
+	<-eng.calls      // worker now blocked at p2's Synthesize
+
+	if err := store.Finalize(job.ID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	eng.release <- struct{}{} // let p2 complete (boundary rule)
+
+	mustReachStatus(t, store, job.ID, StatusDone)
+
+	j, _ := store.Get(job.ID)
+	if j.Progress.Done != 2 {
+		t.Errorf("expected Done=2 (boundary rule), got %d", j.Progress.Done)
+	}
+	if len(j.Outputs) != 1 || j.Outputs[0].FullBytes <= 44 {
+		t.Errorf("expected saved partial full.wav, got %+v", j.Outputs)
+	}
+}

@@ -238,6 +238,60 @@ func (s *JobStore) Pause(id string) error {
 	return nil
 }
 
+// Resume continues a paused job. If all is true, auto-pause is disabled for
+// the remainder of the job. Errors if the job is not paused.
+func (s *JobStore) Resume(id string, all bool) error {
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("job not found")
+	}
+	if j.Status != StatusPaused {
+		st := j.Status
+		s.mu.Unlock()
+		return fmt.Errorf("job is %s, cannot resume", st)
+	}
+	ctl := s.controls[id]
+	s.mu.Unlock()
+	select {
+	case ctl.resume <- resumeReq{all: all}:
+		return nil
+	default:
+		return fmt.Errorf("resume already pending")
+	}
+}
+
+// Finalize ends a job — from paused, signal exit cleanly with the partial
+// stitched; from running, set a flag the worker catches at the next paragraph
+// boundary. Errors if the job is done/error.
+func (s *JobStore) Finalize(id string) error {
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("job not found")
+	}
+	if j.Status != StatusRunning && j.Status != StatusPaused {
+		st := j.Status
+		s.mu.Unlock()
+		return fmt.Errorf("job is %s, cannot finalize", st)
+	}
+	ctl := s.controls[id]
+	if j.Status == StatusPaused {
+		s.mu.Unlock()
+		select {
+		case ctl.resume <- resumeReq{finalize: true}:
+			return nil
+		default:
+			return fmt.Errorf("signal already pending (resume or finalize)")
+		}
+	}
+	ctl.finalizeRequested = true
+	s.mu.Unlock()
+	return nil
+}
+
 type ctlAction int
 
 const (
