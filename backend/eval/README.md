@@ -7,7 +7,10 @@ need the model + ONNX Runtime, so they run on your machine, not in CI.
 
 ## Tier 0 — audio sanity (after generating any job)
     go run ./eval/audiocheck -dir ../outbox/job-<id> -sr <SR>
-Also enforced at runtime: a silent/degenerate paragraph fails the job loudly.
+Also enforced at runtime: a degenerate paragraph is re-sampled with a fresh
+seed (up to `maxSynthAttempts`), since a silent draw is a transient flow-matching
+artifact; only a paragraph that is degenerate on *every* attempt fails the job
+loudly. See `TestSynthesizeWithGuard*` in `internal/tts/supertonic_test.go`.
 
 ## Tier 1 — wrapper parity (seed-pinned)
     SUPERTONIC_ASSETS=../assets go test -tags model_evals ./internal/tts -run Parity -v

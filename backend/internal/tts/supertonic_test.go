@@ -2,6 +2,7 @@ package tts
 
 import (
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -59,5 +60,77 @@ func TestEncodeWAVRoundTripsConfiguredSampleRate(t *testing.T) {
 		if last != -32767 {
 			t.Errorf("clamp: last sample = %d, want -32767", last)
 		}
+	}
+}
+
+// constSignal returns n samples at amp. amp=0 is silent (RMS 0, below the
+// audiocheck floor -> degenerate); a non-zero amp well under full scale passes.
+func constSignal(n int, amp float32) []float32 {
+	s := make([]float32, n)
+	for i := range s {
+		s[i] = amp
+	}
+	return s
+}
+
+// Regression: a single paragraph that comes back silent on an unlucky sampler
+// seed used to abort the whole job. synthesizeWithGuard must re-sample and
+// recover, since a degenerate draw is transient (the sampler re-seeds per call).
+func TestSynthesizeWithGuardRecoversFromTransientDegenerate(t *testing.T) {
+	const sr = 44100
+	good := constSignal(sr/10, 0.3) // 0.1s, RMS 0.3 >> floor
+	silent := constSignal(sr/10, 0) // RMS 0 < floor -> degenerate
+
+	calls := 0
+	got, err := synthesizeWithGuard(func() ([]float32, error) {
+		calls++
+		if calls < 3 { // first two draws collapse to silence
+			return silent, nil
+		}
+		return good, nil
+	}, sr, maxSynthAttempts)
+	if err != nil {
+		t.Fatalf("expected recovery after re-sampling, got error: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("expected 3 attempts (2 degenerate + 1 good), got %d", calls)
+	}
+	if !reflect.DeepEqual(got, good) {
+		t.Fatal("expected the good (non-degenerate) samples to be returned")
+	}
+}
+
+// The retry must stay bounded: persistently degenerate output is still a loud
+// error after maxSynthAttempts, not an infinite loop or a silent pass.
+func TestSynthesizeWithGuardFailsWhenEveryAttemptDegenerate(t *testing.T) {
+	const sr = 44100
+	silent := constSignal(100, 0)
+	calls := 0
+	_, err := synthesizeWithGuard(func() ([]float32, error) {
+		calls++
+		return silent, nil
+	}, sr, maxSynthAttempts)
+	if err == nil {
+		t.Fatal("expected an error when every attempt is degenerate")
+	}
+	if calls != maxSynthAttempts {
+		t.Fatalf("expected %d attempts, got %d", maxSynthAttempts, calls)
+	}
+}
+
+// A genuine inference error is not a transient sampling artifact, so it must
+// propagate immediately without burning retries (and without being masked).
+func TestSynthesizeWithGuardDoesNotRetryInferenceError(t *testing.T) {
+	boom := errors.New("inference boom")
+	calls := 0
+	_, err := synthesizeWithGuard(func() ([]float32, error) {
+		calls++
+		return nil, boom
+	}, 44100, maxSynthAttempts)
+	if calls != 1 {
+		t.Fatalf("a genuine inference error must not be retried; got %d calls", calls)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the inference error to propagate, got %v", err)
 	}
 }

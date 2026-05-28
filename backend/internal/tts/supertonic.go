@@ -32,6 +32,15 @@ const (
 	totalStep       = 8             // denoising steps (upstream default)
 	speed           = float32(1.05) // speech rate (upstream default)
 	chunkSilenceSec = float32(0.3)  // gap between sub-chunks of long text (upstream example default)
+
+	// maxSynthAttempts bounds how many times a single paragraph is synthesized
+	// when the result comes back degenerate (silent/clipped/non-finite). The
+	// flow-matching sampler draws a fresh noise latent on every Call (seeded
+	// per call from time), so an unlucky draw that collapses to silence is
+	// transient — re-sampling almost always recovers. Degenerate draws are
+	// rare, so the extra cost is paid only on the rare failure, and it keeps a
+	// single bad paragraph from aborting a multi-thousand-paragraph job.
+	maxSynthAttempts = 4
 )
 
 // Engine is a loaded Supertonic model + voice/language catalogue. Safe for
@@ -172,16 +181,45 @@ func (e *Engine) synthesizeOne(text, voice, lang string) ([]float32, int, error)
 	if err != nil {
 		return nil, 0, err
 	}
-	samples, _, err := e.model.Call(text, lang, style, totalStep, speed, chunkSilenceSec)
+	// Tier-0 runtime guard: a silent/degenerate result is a transient sampling
+	// artifact (see maxSynthAttempts), so re-sample before giving up. Only a
+	// paragraph that is degenerate on every attempt becomes a loud error.
+	samples, err := synthesizeWithGuard(func() ([]float32, error) {
+		s, _, callErr := e.model.Call(text, lang, style, totalStep, speed, chunkSilenceSec)
+		if callErr != nil {
+			return nil, fmt.Errorf("inference: %w", callErr)
+		}
+		return s, nil
+	}, e.sr, maxSynthAttempts)
 	if err != nil {
-		return nil, 0, fmt.Errorf("inference: %w", err)
-	}
-	// Tier-0 runtime guard: turn a silent/degenerate result into a loud error
-	// instead of a silently-passing job.
-	if err := audiocheck.Guard(samples, e.sr); err != nil {
-		return nil, 0, fmt.Errorf("degenerate audio (voice=%s lang=%s text=%q): %w", voice, lang, truncate(text, 60), err)
+		return nil, 0, fmt.Errorf("degenerate audio after %d attempts (voice=%s lang=%s text=%q): %w", maxSynthAttempts, voice, lang, truncate(text, 60), err)
 	}
 	return samples, e.sr, nil
+}
+
+// synthesizeWithGuard runs call and validates its output with audiocheck.Guard,
+// retrying up to attempts times when the audio is degenerate (silent, fully
+// clipped, or non-finite). Re-sampling recovers because the flow-matching
+// sampler re-seeds on every call. A genuine inference error (call returns a
+// non-nil error) is fatal and is never retried. If every attempt is degenerate,
+// the last guard failure is returned.
+func synthesizeWithGuard(call func() ([]float32, error), sampleRate, attempts int) ([]float32, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastGuardErr error
+	for i := 0; i < attempts; i++ {
+		samples, err := call()
+		if err != nil {
+			return nil, err
+		}
+		if guardErr := audiocheck.Guard(samples, sampleRate); guardErr != nil {
+			lastGuardErr = guardErr
+			continue
+		}
+		return samples, nil
+	}
+	return nil, lastGuardErr
 }
 
 // styleFor lazily loads and caches a voice's style tensors. Caller holds e.mu.
