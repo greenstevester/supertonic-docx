@@ -10,6 +10,48 @@ import (
 	"time"
 )
 
+// blockingFakeEngine releases each Synthesize call only after the test signals
+// via release. This makes pause/resume tests fully deterministic: the test
+// drives the worker one paragraph at a time, with explicit pause windows.
+type blockingFakeEngine struct {
+	*fakeEngine
+	release chan struct{}
+	calls   chan string // worker sends paragraph text before blocking
+}
+
+func newBlockingFakeEngine() *blockingFakeEngine {
+	return &blockingFakeEngine{
+		fakeEngine: newFakeEngine(),
+		release:    make(chan struct{}, 64),
+		calls:      make(chan string, 64),
+	}
+}
+
+func (b *blockingFakeEngine) Synthesize(text, voice, lang string) ([]byte, error) {
+	b.calls <- text
+	<-b.release
+	return b.fakeEngine.Synthesize(text, voice, lang)
+}
+
+// releaseN releases N pending Synthesize calls in order.
+func releaseN(b *blockingFakeEngine, n int) {
+	for i := 0; i < n; i++ {
+		<-b.calls
+		b.release <- struct{}{}
+	}
+}
+
+func mustReachStatus(t *testing.T, store *JobStore, id string, want JobStatus) {
+	t.Helper()
+	if !waitFor(func() bool {
+		j, _ := store.Get(id)
+		return j.Status == want
+	}, 2*time.Second) {
+		j, _ := store.Get(id)
+		t.Fatalf("did not reach %s; status=%s", want, j.Status)
+	}
+}
+
 /* ---------- fake engine ---------- */
 
 // fakeEngine returns a fixed canonical WAV per Synthesize call so JobStore
@@ -171,5 +213,48 @@ func TestJobSetsResultMetadataOnCompletion(t *testing.T) {
 	if out.DurationSec < 0.25 {
 		// 3 paragraphs × 0.1s = 0.3s nominal (paraGapMs=0 → no extra silence).
 		t.Errorf("DurationSec = %f, want ≈ 0.3", out.DurationSec)
+	}
+}
+
+func TestPauseStitchesPartialFullWav(t *testing.T) {
+	dir := t.TempDir()
+	eng := newBlockingFakeEngine()
+	store := NewJobStore(dir, eng, 0)
+	docxPath := writeTestDocx(t, []string{"p1", "p2", "p3", "p4", "p5"})
+
+	job, err := store.Submit(docxPath, "test.docx", []string{"M1"}, []string{"en"}, 0)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Release 2 paragraphs.
+	releaseN(eng, 2)
+
+	// Worker is now blocked at paragraph 3's Synthesize call.
+	<-eng.calls // observe the call to p3
+
+	// Request pause while p3 is in-flight (blocked on release).
+	if err := store.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Boundary rule: p3 must complete before the pause takes effect.
+	eng.release <- struct{}{}
+
+	mustReachStatus(t, store, job.ID, StatusPaused)
+
+	j, _ := store.Get(job.ID)
+	if len(j.Outputs) != 1 {
+		t.Fatalf("expected 1 in-progress Output, got %d", len(j.Outputs))
+	}
+	out := j.Outputs[0]
+	if len(out.Paragraphs) != 3 {
+		t.Errorf("expected 3 paragraph URLs (boundary rule), got %d", len(out.Paragraphs))
+	}
+	if out.FullBytes <= 44 {
+		t.Errorf("expected stitched partial full.wav, FullBytes = %d", out.FullBytes)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "job-"+job.ID, "M1_en", "full.wav")); err != nil {
+		t.Errorf("partial full.wav not on disk: %v", err)
 	}
 }

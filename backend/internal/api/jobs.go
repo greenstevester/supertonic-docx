@@ -41,14 +41,14 @@ type JobStatus string
 const (
 	StatusQueued  JobStatus = "queued"
 	StatusRunning JobStatus = "running"
-	StatusPaused  JobStatus = "paused" // auto-pause after every N bundles (pause_every > 0)
+	StatusPaused  JobStatus = "paused" // auto-pause after every N paragraph synthesis steps (pause_every > 0)
 	StatusDone    JobStatus = "done"
 	StatusError   JobStatus = "error"
 )
 
 // errJobFinalized is returned from runInner when the worker exits cleanly via
-// a user finalize signal (running or paused). run() will translate it to
-// StatusDone — wiring lands in the worker-restructure task (T4).
+// a user finalize signal (running or paused). run() translates it to
+// StatusDone.
 var errJobFinalized = errors.New("job finalized by user")
 
 // Output describes one voice × language bundle within a job.
@@ -122,7 +122,8 @@ func NewJobStore(outboxDir string, engine Engine, paraGapMs int) *JobStore {
 // Submit accepts an already-uploaded .docx (path on disk) and the user's
 // requested voices/langs. It validates, creates a Job record, and kicks off
 // the worker goroutine. pauseEvery > 0 enables auto-pause after every N
-// completed bundles; 0 disables auto-pause.
+// paragraph synthesis steps (counted globally across all voice×lang bundles);
+// 0 disables auto-pause.
 func (s *JobStore) Submit(docxPath, sourceName string, voices, langs []string, pauseEvery int) (*Job, error) {
 	voices = dedupe(voices)
 	langs = dedupe(langs)
@@ -183,42 +184,156 @@ func (s *JobStore) deleteControls(id string) {
 }
 
 // getControl returns the live control struct for the given job, or nil if the
-// job has no active control entry. The struct's fields are mutable and must
-// only be read or written while holding s.mu — re-acquire it after this
-// returns, since the brief read-lock taken here is released on return.
+// job has no active control entry. The returned struct's channel field
+// (resume) may be used without holding s.mu — channel operations are their
+// own synchronisation. The boolean and int fields (pauseEvery,
+// pauseRequested, finalizeRequested) must be read or written only while
+// holding s.mu — re-acquire it after this returns, since the brief read-lock
+// taken here is released on return.
 func (s *JobStore) getControl(id string) *jobControl {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.controls[id]
 }
 
-func (s *JobStore) Get(id string) (*Job, bool) {
+// Get returns a snapshot of the current job state, or false if the id is
+// unknown. The returned Job is a value copy taken under s.mu — callers may
+// read it freely without further synchronisation. (The Outputs slice's
+// backing array is shared with the live job, but the worker only ever
+// appends, never overwrites, so reads of already-published entries are
+// safe.)
+func (s *JobStore) Get(id string) (Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	j, ok := s.jobs[id]
-	return j, ok
+	if !ok {
+		return Job{}, false
+	}
+	return *j, true
+}
+
+// Pause requests a pause; the worker will pause at the next paragraph boundary.
+// Errors if the job is not currently running, or if a pause is already pending
+// (rejecting a redundant Pause keeps the contract sharp and closes the race
+// window where a concurrent Pause's intent would otherwise be silently wiped
+// at the worker's resume reset).
+func (s *JobStore) Pause(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return fmt.Errorf("job not found")
+	}
+	if j.Status != StatusRunning {
+		return fmt.Errorf("job is %s, cannot pause", j.Status)
+	}
+	ctl, ok := s.controls[id]
+	if !ok {
+		return fmt.Errorf("job control missing")
+	}
+	if ctl.pauseRequested {
+		return fmt.Errorf("pause already pending")
+	}
+	ctl.pauseRequested = true
+	return nil
+}
+
+type ctlAction int
+
+const (
+	ctlContinue ctlAction = iota
+	ctlPause
+	ctlFinalize
+)
+
+// controlGate reads the control flags and decides what to do before the next
+// paragraph. Auto-pause fires when stepsSinceResume reaches pauseEvery.
+// stepsSinceResume is the global paragraph counter from runInner; it is not
+// per-bundle.
+func (s *JobStore) controlGate(id string, stepsSinceResume int) ctlAction {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctl, ok := s.controls[id]
+	if !ok {
+		return ctlContinue
+	}
+	if ctl.finalizeRequested {
+		return ctlFinalize
+	}
+	if ctl.pauseRequested {
+		return ctlPause
+	}
+	if ctl.pauseEvery > 0 && stepsSinceResume >= ctl.pauseEvery {
+		return ctlPause
+	}
+	return ctlContinue
+}
+
+// appendLiveOutput adds a new Output for the in-progress bundle and returns
+// its index in job.Outputs. Paragraphs/stitch fields are filled in live.
+func (s *JobStore) appendLiveOutput(id, voice, lang string) int {
+	var idx int
+	s.update(id, func(j *Job) {
+		j.Outputs = append(j.Outputs, Output{Voice: voice, Lang: lang})
+		idx = len(j.Outputs) - 1
+	})
+	return idx
+}
+
+// updateBundleFromStitch (re)stitches full.wav from the paragraphs rendered so
+// far and updates the live Output's stitch fields. Idempotent. No-op if there
+// are no paragraphs yet.
+func (s *JobStore) updateBundleFromStitch(id string, outputIdx int, bundleDir string, paraPaths []string) {
+	if len(paraPaths) == 0 {
+		return
+	}
+	fullPath := filepath.Join(bundleDir, "full.wav")
+	if err := audio.Concatenate(paraPaths, fullPath, s.paraGapMs); err != nil {
+		return // non-fatal for partial stitch
+	}
+	var size int64
+	if info, err := os.Stat(fullPath); err == nil {
+		size = info.Size()
+	}
+	dur, _ := audio.Duration(fullPath)
+	s.update(id, func(j *Job) {
+		if outputIdx < len(j.Outputs) {
+			j.Outputs[outputIdx].FullURL = fileURL(s.outboxDir, fullPath)
+			j.Outputs[outputIdx].FullBytes = size
+			j.Outputs[outputIdx].DurationSec = dur
+		}
+	})
 }
 
 // run is the actual worker. One goroutine per job.
 func (s *JobStore) run(job *Job, docxPath string) {
+	defer s.deleteControls(job.ID)
 	s.update(job.ID, func(j *Job) {
 		j.Status = StatusRunning
 		j.StartedAt = time.Now()
 	})
 
-	if err := s.runInner(job, docxPath); err != nil {
+	err := s.runInner(job, docxPath)
+	finished := time.Now()
+
+	switch {
+	case errors.Is(err, errJobFinalized):
+		s.update(job.ID, func(j *Job) {
+			j.Status = StatusDone
+			j.FinishedAt = finished
+		})
+	case err != nil:
 		s.update(job.ID, func(j *Job) {
 			j.Status = StatusError
 			j.Error = err.Error()
-			j.FinishedAt = time.Now()
+			j.FinishedAt = finished
 		})
-		return
+	default:
+		s.update(job.ID, func(j *Job) {
+			j.Status = StatusDone
+			j.FinishedAt = finished
+		})
 	}
-
-	s.update(job.ID, func(j *Job) {
-		j.Status = StatusDone
-		j.FinishedAt = time.Now()
-	})
 }
 
 func (s *JobStore) runInner(job *Job, docxPath string) error {
@@ -244,76 +359,72 @@ func (s *JobStore) runInner(job *Job, docxPath string) error {
 		return err
 	}
 
+	// stepsSinceResume counts paragraph syntheses across all (voice, lang)
+	// bundles — not per-bundle. Per the spec, pause_every is a global cadence:
+	// if a job has multiple bundles, an auto-pause can land mid-bundle on the
+	// second/third bundle without resetting between bundles. The counter
+	// resets only when the worker resumes from a pause.
+	stepsSinceResume := 0
+
 	for _, voice := range job.Voices {
 		for _, lang := range job.Langs {
-			out, err := s.synthesizeBundle(job, jobDir, voice, lang, paragraphs)
-			if err != nil {
-				return fmt.Errorf("voice=%s lang=%s: %w", voice, lang, err)
+			bundleDir := filepath.Join(jobDir, voice+"_"+lang)
+			if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+				return err
 			}
-			// Append to the live job record so the UI sees partial progress
-			// (each bundle appears as soon as it completes).
-			s.update(job.ID, func(j *Job) {
-				j.Outputs = append(j.Outputs, out)
-			})
+
+			outputIdx := s.appendLiveOutput(job.ID, voice, lang)
+			var paraPaths []string
+
+			for _, p := range paragraphs {
+				switch s.controlGate(job.ID, stepsSinceResume) {
+				case ctlFinalize:
+					s.updateBundleFromStitch(job.ID, outputIdx, bundleDir, paraPaths)
+					return errJobFinalized
+				case ctlPause:
+					s.updateBundleFromStitch(job.ID, outputIdx, bundleDir, paraPaths)
+					s.update(job.ID, func(j *Job) { j.Status = StatusPaused })
+					ctl := s.getControl(job.ID)
+					req := <-ctl.resume // BLOCK until /resume or /finalize
+					if req.finalize {
+						return errJobFinalized
+					}
+					s.mu.Lock()
+					ctl.pauseRequested = false
+					if req.all {
+						ctl.pauseEvery = 0
+					}
+					s.mu.Unlock()
+					stepsSinceResume = 0
+					s.update(job.ID, func(j *Job) { j.Status = StatusRunning })
+				}
+
+				wavBytes, err := s.engine.Synthesize(p.Text, voice, lang)
+				if err != nil {
+					return fmt.Errorf("voice=%s lang=%s paragraph %d: %w", voice, lang, p.Index, err)
+				}
+				name := fmt.Sprintf("para_%03d.wav", p.Index)
+				path := filepath.Join(bundleDir, name)
+				if err := os.WriteFile(path, wavBytes, 0o644); err != nil {
+					return err
+				}
+				paraPaths = append(paraPaths, path)
+				s.update(job.ID, func(j *Job) {
+					if outputIdx < len(j.Outputs) {
+						j.Outputs[outputIdx].Paragraphs = append(j.Outputs[outputIdx].Paragraphs, fileURL(s.outboxDir, path))
+					}
+					j.Progress.Done++
+				})
+				stepsSinceResume++
+			}
+
+			// Final stitch for this completed bundle.
+			s.updateBundleFromStitch(job.ID, outputIdx, bundleDir, paraPaths)
+			// Per-bundle manifest (non-fatal).
+			_ = writeBundleManifest(bundleDir, paragraphs, paraPaths)
 		}
 	}
 	return nil
-}
-
-// synthesizeBundle produces one voice/lang output directory: paragraph WAVs
-// plus a stitched full.wav.
-func (s *JobStore) synthesizeBundle(job *Job, jobDir, voice, lang string, paragraphs []docx.Paragraph) (Output, error) {
-	bundleDir := filepath.Join(jobDir, voice+"_"+lang)
-	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
-		return Output{}, err
-	}
-
-	var paraPaths []string
-	var paraURLs []string
-
-	for _, p := range paragraphs {
-		wav, err := s.engine.Synthesize(p.Text, voice, lang)
-		if err != nil {
-			return Output{}, fmt.Errorf("paragraph %d: %w", p.Index, err)
-		}
-		name := fmt.Sprintf("para_%03d.wav", p.Index)
-		path := filepath.Join(bundleDir, name)
-		if err := os.WriteFile(path, wav, 0o644); err != nil {
-			return Output{}, err
-		}
-		paraPaths = append(paraPaths, path)
-		paraURLs = append(paraURLs, fileURL(s.outboxDir, path))
-
-		s.update(job.ID, func(j *Job) { j.Progress.Done++ })
-	}
-
-	fullPath := filepath.Join(bundleDir, "full.wav")
-	if err := audio.Concatenate(paraPaths, fullPath, s.paraGapMs); err != nil {
-		return Output{}, fmt.Errorf("stitch: %w", err)
-	}
-
-	var fullBytes int64
-	if info, err := os.Stat(fullPath); err == nil {
-		fullBytes = info.Size()
-	}
-	durSec, _ := audio.Duration(fullPath) // non-fatal; 0 on failure
-
-	// Per-bundle manifest with durations — useful for downstream alignment.
-	if err := writeBundleManifest(bundleDir, paragraphs, paraPaths); err != nil {
-		// Non-fatal: log and continue. The audio is the real deliverable.
-		// (No logger plumbed in here; the API layer's middleware will surface
-		// the error if it propagates. For now, swallow silently.)
-		_ = err
-	}
-
-	return Output{
-		Voice:       voice,
-		Lang:        lang,
-		FullURL:     fileURL(s.outboxDir, fullPath),
-		Paragraphs:  paraURLs,
-		FullBytes:   fullBytes,
-		DurationSec: durSec,
-	}, nil
 }
 
 func (s *JobStore) update(id string, fn func(*Job)) {
@@ -390,7 +501,14 @@ type bundleParagraph struct {
 
 func writeBundleManifest(bundleDir string, paragraphs []docx.Paragraph, paths []string) error {
 	bm := bundleManifest{}
-	for i, p := range paragraphs {
+	// Guard against short paths: with pause/finalize the caller may pass fewer
+	// rendered WAVs than total paragraphs. Iterate over the shorter slice.
+	n := len(paragraphs)
+	if len(paths) < n {
+		n = len(paths)
+	}
+	for i := 0; i < n; i++ {
+		p := paragraphs[i]
 		dur, _ := audio.Duration(paths[i])
 		bm.Paragraphs = append(bm.Paragraphs, bundleParagraph{
 			Index:    p.Index,
