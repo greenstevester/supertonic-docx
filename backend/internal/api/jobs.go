@@ -33,7 +33,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/yourorg/supertonic-docx/internal/audio"
 	"github.com/yourorg/supertonic-docx/internal/docx"
-	"github.com/yourorg/supertonic-docx/internal/tts"
 )
 
 type JobStatus string
@@ -77,14 +76,14 @@ type Progress struct {
 // map iteration outside this file), so the lock discipline stays simple.
 type JobStore struct {
 	outboxDir string
-	engine    *tts.Engine
+	engine    Engine
 	paraGapMs int
 
 	mu   sync.RWMutex
 	jobs map[string]*Job
 }
 
-func NewJobStore(outboxDir string, engine *tts.Engine, paraGapMs int) *JobStore {
+func NewJobStore(outboxDir string, engine Engine, paraGapMs int) *JobStore {
 	return &JobStore{
 		outboxDir: outboxDir,
 		engine:    engine,
