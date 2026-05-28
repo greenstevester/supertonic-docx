@@ -197,11 +197,11 @@ func (s *JobStore) getControl(id string) *jobControl {
 }
 
 // Get returns a snapshot of the current job state, or false if the id is
-// unknown. The returned Job is a value copy taken under s.mu — callers may
-// read it freely without further synchronisation. (The Outputs slice's
-// backing array is shared with the live job, but the worker only ever
-// appends, never overwrites, so reads of already-published entries are
-// safe.)
+// unknown. The snapshot is taken under s.mu and deep-copies Outputs so
+// callers can read it freely without further synchronisation, even while
+// the worker continues to update fields in place (updateBundleFromStitch
+// overwrites FullURL/FullBytes/DurationSec on the live Output, so a
+// shallow copy that shared the backing array would race).
 func (s *JobStore) Get(id string) (Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -209,7 +209,9 @@ func (s *JobStore) Get(id string) (Job, bool) {
 	if !ok {
 		return Job{}, false
 	}
-	return *j, true
+	cp := *j
+	cp.Outputs = append([]Output(nil), j.Outputs...)
+	return cp, true
 }
 
 // Pause requests a pause; the worker will pause at the next paragraph boundary.
