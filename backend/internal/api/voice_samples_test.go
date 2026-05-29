@@ -64,6 +64,39 @@ func (c *countingFakeEngine) Synthesize(text, voice, lang string) ([]byte, error
 	return c.fakeEngine.Synthesize(text, voice, lang)
 }
 
+func TestFrontendAssetsAreNoCache(t *testing.T) {
+	dir := t.TempDir()
+	frontend := t.TempDir()
+	if err := os.WriteFile(filepath.Join(frontend, "index.html"), []byte("<!doctype html><html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "app.js"), []byte("// js"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewJobStore(dir, newFakeEngine(), 0)
+	srv := NewServer(ServerOpts{Jobs: store, OutboxDir: dir, FrontendDir: frontend})
+
+	for _, path := range []string{"/", "/static/app.js"} {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: status = %d", path, w.Code)
+		}
+		if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+			t.Errorf("%s: Cache-Control = %q, want it to contain no-cache", path, cc)
+		}
+	}
+
+	// API responses must NOT inherit the no-cache header — only frontend assets.
+	req := httptest.NewRequest("GET", "/api/catalogue", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if cc := w.Header().Get("Cache-Control"); cc != "" {
+		t.Errorf("/api/catalogue: Cache-Control = %q, want empty (no-cache header should not leak to API)", cc)
+	}
+}
+
 func TestVoiceSampleReturns404OnUnknownVoice(t *testing.T) {
 	dir := t.TempDir()
 	store := NewJobStore(dir, newFakeEngine(), 0)

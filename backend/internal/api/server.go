@@ -57,7 +57,21 @@ func NewServer(opts ServerOpts) http.Handler {
 	r.GET("/files/*path", h.serveFile)
 
 	// Frontend at root. Single-page; everything else falls through.
+	//
+	// We force a no-cache header on the SPA and its static assets so a stale
+	// app.js can't survive an iteration. Without this, browsers' default
+	// heuristic caching makes "restart the server" misleadingly insufficient
+	// when the catalogue API shape (or any frontend code) changes — you get
+	// fun things like `[object Object]` chips. The headers permit 304
+	// revalidation, so unchanged files are still cheap on the wire.
 	if opts.FrontendDir != "" {
+		r.Use(func(c *gin.Context) {
+			p := c.Request.URL.Path
+			if p == "/" || strings.HasPrefix(p, "/static/") {
+				c.Header("Cache-Control", "no-cache, must-revalidate")
+			}
+			c.Next()
+		})
 		r.StaticFile("/", filepath.Join(opts.FrontendDir, "index.html"))
 		r.Static("/static", opts.FrontendDir)
 	}
