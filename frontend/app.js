@@ -331,8 +331,13 @@ function renderJob(job) {
   const total = job.progress.total || 1;
   const pct = Math.min(100, (job.progress.done / total) * 100);
   $('job-progress-bar').style.right = `${100 - pct}%`;
+  // When paused, lead with "paused at" so the status is unambiguous even if
+  // the user only glances at the progress line — the action bar shows the
+  // available next steps but the progress line is what most users read first.
+  const prefix = job.status === 'paused' ? 'paused at' : '';
+  const suffix = job.status === 'paused' ? '' : ' paragraphs synthesised';
   $('job-progress-text').textContent =
-    `${job.progress.done} / ${job.progress.total} paragraphs synthesised`;
+    `${prefix} ${job.progress.done} / ${job.progress.total}${suffix}`.trim();
 
   renderControls(job);
 
