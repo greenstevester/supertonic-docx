@@ -71,9 +71,25 @@ type handlers struct {
 
 func (h *handlers) catalogue(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"voices":    h.opts.Jobs.engine.Voices(),
+		"voices":    catalogueVoices(h.opts.Jobs.engine.Voices()),
 		"languages": catalogueLangs(h.opts.Jobs.engine.Languages()),
 	})
+}
+
+type voiceEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+func catalogueVoices(names []string) []voiceEntry {
+	out := make([]voiceEntry, 0, len(names))
+	for _, n := range names {
+		// Missing entries fall through as the empty string and the frontend
+		// renders no subtitle — fallback voices (M1–F5 when assets are absent)
+		// still surface, just without descriptions.
+		out = append(out, voiceEntry{Name: n, Description: voiceDescriptions[n]})
+	}
+	return out
 }
 
 type langEntry struct {

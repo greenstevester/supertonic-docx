@@ -1,14 +1,51 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+func TestCatalogueReturnsVoiceDescriptions(t *testing.T) {
+	dir := t.TempDir()
+	store := NewJobStore(dir, newFakeEngine(), 0)
+	srv := NewServer(ServerOpts{Jobs: store, OutboxDir: dir})
+
+	req := httptest.NewRequest("GET", "/api/catalogue", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		Voices []voiceEntry `json:"voices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Voices) == 0 {
+		t.Fatal("no voices returned")
+	}
+	byName := map[string]string{}
+	for _, v := range resp.Voices {
+		byName[v.Name] = v.Description
+	}
+	// Fake engine exposes M1 + F1, both of which have descriptions in the
+	// shipped map; one keyword each is enough to confirm wiring.
+	if !strings.Contains(byName["M1"], "Jason") {
+		t.Errorf("M1 description missing/wrong: %q", byName["M1"])
+	}
+	if !strings.Contains(byName["F1"], "Emily") {
+		t.Errorf("F1 description missing/wrong: %q", byName["F1"])
+	}
+}
 
 // countingFakeEngine wraps fakeEngine with an atomic call counter so tests can
 // verify caching (one Synthesize per voice across N requests) and concurrency

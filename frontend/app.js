@@ -76,31 +76,45 @@ function renderVoiceChips() {
   el.removeAttribute('data-loading');
   el.innerHTML = '';
   for (const v of state.voices) {
+    // v is { name, description } from /api/catalogue. Description is optional.
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'chip chip-voice';
     b.setAttribute('aria-pressed', 'false');
-    b.dataset.voice = v;
+    b.dataset.voice = v.name;
+    if (v.description) b.title = v.description; // tooltip in case the subtitle is truncated
+
+    const row = document.createElement('span');
+    row.className = 'chip-row';
 
     const label = document.createElement('span');
     label.className = 'chip-label';
-    label.textContent = v;
+    label.textContent = v.name;
 
     const play = document.createElement('span');
     play.className = 'chip-preview';
-    play.setAttribute('aria-label', `Preview ${v}`);
-    play.title = `Preview ${v}`;
+    play.setAttribute('aria-label', `Preview ${v.name}`);
+    play.title = `Preview ${v.name}`;
     play.textContent = '▶';
 
-    b.append(label, play);
+    row.append(label, play);
+    b.append(row);
+
+    if (v.description) {
+      const sub = document.createElement('span');
+      sub.className = 'chip-subtitle';
+      sub.textContent = v.description;
+      b.append(sub);
+    }
+
     // Clicks on the ▶ glyph play a preview; clicks elsewhere on the chip
     // toggle selection. We branch on the actual click target so the chip
     // stays a single <button> (nesting interactive elements is invalid).
     b.addEventListener('click', (e) => {
       if (e.target.closest('.chip-preview')) {
-        previewVoice(v, play);
+        previewVoice(v.name, play);
       } else {
-        toggleVoice(v, b);
+        toggleVoice(v.name, b);
       }
     });
     el.appendChild(b);
@@ -109,7 +123,7 @@ function renderVoiceChips() {
   // ready-to-go state looks like.
   if (state.voices.length > 0) {
     const first = el.querySelector('.chip');
-    toggleVoice(state.voices[0], first);
+    toggleVoice(state.voices[0].name, first);
   }
 }
 

@@ -267,15 +267,41 @@ main {
 }
 .chip[aria-pressed="true"] .chip-code { color: var(--paper-deep); }
 
-/* Voice chips host an inline ▶ preview glyph. The chip itself is a single
-   <button>; the .chip-preview span is a click target inside it that the
-   click handler differentiates from selection clicks. */
+/* Voice chips host an inline ▶ preview glyph and an optional subtitle line.
+   The chip is a single <button>; the .chip-preview span is a click target
+   inside it that the click handler differentiates from selection clicks. */
 .chip-voice {
   display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 8px; /* slightly tighter than the default so ▶ doesn't drift right */
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  text-align: left;
+  max-width: 240px;
+  padding: 8px 10px;
 }
+.chip-voice .chip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chip-subtitle {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  color: var(--ink-faint);
+  white-space: normal;
+  /* truncate at two lines; full text is still on the chip's title attribute */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip[aria-pressed="true"] .chip-subtitle { color: var(--paper-deep); }
 .chip-preview {
   display: inline-flex;
   align-items: center;
