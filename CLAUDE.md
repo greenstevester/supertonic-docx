@@ -80,8 +80,36 @@ events. ONNX sessions aren't goroutine-safe, so `Engine.Synthesize` serialises c
   restart orphans half-finished jobs harmlessly (everything is under a `job-<id>/` dir). This
   is intentional — no DB for a single-user/single-machine tool.
 - One goroutine per job. Synthesis within a job is **sequential** (CPU-bound, single ONNX
-  session). The `Outputs` slice is appended per-bundle so the UI shows partial progress as
-  bundles complete.
+  session). The live `Output` for the in-progress bundle is appended *as paragraphs render*
+  (not only at bundle completion) so the UI shows partial progress and partial `full.wav`
+  links while paused.
+
+#### Lifecycle / state machine
+
+```
+queued → running → (paused ⇄ running) → done | error
+```
+
+- **Manual pause** via `POST /api/jobs/:id/pause`. Worker pauses at the **next paragraph
+  boundary** (the in-flight paragraph completes first — never mid-WAV).
+- **Auto-pause** via `pause_every` submit-time field. Counter is **global across all (voice,
+  lang) bundles**, not per-bundle. Resets on resume.
+- **On pause:** the current bundle's `full.wav` is (re)stitched from rendered paragraphs and
+  the live `Output`'s `full_bytes` / `duration_sec` updated; status → `paused`; worker blocks
+  on a per-job buffered (cap-1) `resume` channel.
+- **Resume** continues and re-applies `pause_every` (so "process X then pause for more" works
+  out of the box). Body `{"all": true}` clears `pause_every` for the remainder.
+- **Finalize** (`POST .../finalize`) ends the job at the next paragraph boundary with the
+  partial saved. Accepts both `running` and `paused`.
+
+Control state (`jobControl`: `pauseEvery`, `pauseRequested`, `finalizeRequested`, `resume`
+channel) is held in `JobStore.controls`, transient and not serialised, deleted via
+`defer s.deleteControls` when the worker exits. `Get()` returns a **value copy** of `Job`
+with a deep-copied `Outputs` slice header so concurrent worker writes don't race with HTTP
+reads.
+
+JobStore errors distinguish "no such id" (`errJobNotFound`) from state-guard violations; the
+HTTP handlers map the former to 404 and the latter to 409.
 
 ### Output layout on disk
 

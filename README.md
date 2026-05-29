@@ -207,11 +207,20 @@ The web UI is a thin shell over this API — useful if you want to script it.
 
 ### `GET /api/catalogue`
 
-Lists available voices and languages (used to populate the UI):
+Lists available voices (with descriptions) and languages — used to populate the UI:
 
 ```json
-{ "voices": ["F1", "M1", ...], "languages": [{ "code": "en", "name": "English" }, ...] }
+{
+  "voices": [
+    { "name": "F1", "description": "Emily — 24, primary-school teacher from Connecticut." },
+    { "name": "M1", "description": "Jason — 35, office worker, plaid, ADHD..." }
+  ],
+  "languages": [{ "code": "en", "name": "English" }, ...]
+}
 ```
+
+Voice descriptions live in `backend/internal/api/voice_descriptions.go` as a Go map keyed by
+preset name; entries missing from that map simply render without a subtitle.
 
 ### `POST /api/synthesize`
 
@@ -222,6 +231,7 @@ Multipart form:
 | `file` | `.docx` upload | yes | |
 | `voices` | comma-separated | yes | e.g. `M1,F1,M2` |
 | `langs` | comma-separated | yes | e.g. `en,de,ja` |
+| `pause_every` | int (≥ 1) | no | Auto-pause after every N paragraph syntheses (global cadence across all bundles). Omit or `0` = no auto-pause. |
 
 Response (`202 Accepted`):
 
@@ -234,15 +244,58 @@ Response (`202 Accepted`):
 ```json
 {
   "id": "8f3...",
-  "status": "queued | running | done | error",
+  "source_name": "doc.docx",
+  "status": "queued | running | paused | done | error",
   "progress": { "done": 12, "total": 30 },
+  "voices": ["M1"],
+  "langs": ["en"],
+  "pause_every": 5,
   "outputs": [
-    { "voice": "M1", "lang": "en", "full": "/files/job-8f3.../M1_en/full.wav",
-      "paragraphs": ["/files/.../para_001.wav", "..."] }
+    {
+      "voice": "M1", "lang": "en",
+      "full": "/files/job-8f3.../M1_en/full.wav",
+      "paragraphs": ["/files/.../para_001.wav", "..."],
+      "full_bytes": 4194304,
+      "duration_sec": 48.7
+    }
   ],
   "error": null
 }
 ```
+
+Notes:
+
+- `paused` is a real lifecycle state. While paused, the worker has already stitched a partial
+  `full.wav` from the paragraphs rendered so far — the Output's `full_bytes` and `duration_sec`
+  reflect that partial and update on every subsequent pause/resume cycle.
+- `pause_every` is the cadence requested at submit time; the worker re-applies it on each
+  resume unless you resume with `{"all": true}`.
+
+### `POST /api/jobs/{id}/pause`
+
+Request a pause on a running job. The worker pauses **at the next paragraph boundary** — the
+in-flight paragraph completes first. Returns `200 OK` with the updated job; `409` if the job
+isn't running or a pause is already pending; `404` if the id is unknown.
+
+### `POST /api/jobs/{id}/resume`
+
+Resume a paused job. Optional JSON body `{"all": true}` to disable auto-pause for the
+remainder of the job (otherwise the next auto-pause boundary still applies). Returns `200`
+with the updated job; `409` if the job isn't paused or a resume/finalize is already pending;
+`404` if the id is unknown.
+
+### `POST /api/jobs/{id}/finalize`
+
+End the job cleanly at the next paragraph boundary with the partial saved. Accepts both
+`running` and `paused` — "stop and save for good" in one call. Returns `200` with the
+(now-`done`) job; `409` if the job is already `done`/`error`; `404` if the id is unknown.
+
+### `GET /api/voice-samples/{voice}`
+
+Returns a short pre-rendered preview `audio/wav` of the given voice reading a fixed neutral
+English phrase. First request synthesises and caches the WAV to
+`./outbox/_voice_samples/<voice>.wav`; subsequent requests serve from disk with a long
+`Cache-Control: public, max-age=86400`. `404` on unknown voice.
 
 ### `GET /files/...`
 
