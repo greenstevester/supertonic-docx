@@ -4,6 +4,13 @@
 Fully offline. One Docker command. Built on [Supertonic 3](https://huggingface.co/Supertone/supertonic-3)
 (31 languages, ~99M params, ONNX, CPU-only).
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![ONNX Runtime 1.18.0](https://img.shields.io/badge/ONNX_Runtime-1.18.0-005CED?logo=onnx&logoColor=white)](https://github.com/microsoft/onnxruntime)
+[![Supertonic 3](https://img.shields.io/badge/Supertonic-3-ff6b35)](https://huggingface.co/Supertone/supertonic-3)
+[![Languages: 31](https://img.shields.io/badge/languages-31-2ea44f)](#voices--languages)
+[![CPU-only · offline](https://img.shields.io/badge/CPU--only-offline-555)](#prerequisites)
+
 Two ways to use it, both from the same Docker Compose stack:
 
 1. **Web UI** — drag a `.docx` into the browser, pick voices + languages, get download links.
@@ -42,7 +49,7 @@ sudo apt-get install git-lfs && git lfs install
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR-USER/supertonic-docx.git
+git clone https://github.com/greenstevester/supertonic-docx.git
 cd supertonic-docx
 
 # 2. Fetch the model (~200 MB) into ./assets — needs git-lfs (see Prerequisites)
@@ -50,6 +57,10 @@ cd supertonic-docx
 
 # 3. Build and start the stack
 docker compose up --build
+
+# 4. (Optional) Smoke-test the API
+curl -s http://localhost:8787/api/catalogue | head -c 200
+# → JSON listing available voices + languages. If you get this, you're good.
 ```
 
 That's the whole setup. You now have:
@@ -61,8 +72,10 @@ To stop: `docker compose down`.
 
 **What "working" looks like:** upload a `.docx`, watch the progress bar tick to 100%,
 click through to per-paragraph WAVs and a stitched `full.wav` — and hear real speech.
-If audio comes back silent, the engine now fails the job loudly (Tier-0 guard) rather
-than producing silent files; check that `./assets` was populated by `fetch-model.sh`.
+If a paragraph's audio comes back silent, the engine **retries with a fresh seed**
+(the rare flow-matching draws that collapse to silence are transient); only a
+paragraph that's degenerate on *every* attempt fails the job. If startup itself
+fails, check that `./assets` was populated by `fetch-model.sh`.
 
 ### Setup (local, without Docker)
 
@@ -257,9 +270,11 @@ vector_estimator → vocoder`) in-process via
 [`onnxruntime_go`](https://github.com/yalue/onnxruntime_go).
 
 **Native dependency:** the ONNX Runtime C library. The Docker image bundles
-v1.16.0 (aarch64) at `/usr/local/lib/libonnxruntime.so` and sets
-`ONNXRUNTIME_LIB_PATH`. For a bare local run, install ONNX Runtime and point
-`ONNXRUNTIME_LIB_PATH` at the library (macOS: `brew install onnxruntime`).
+v1.18.0 (aarch64) at `/usr/local/lib/libonnxruntime.so` and sets
+`ONNXRUNTIME_LIB_PATH`. The version is pinned to match the vendored
+`yalue/onnxruntime_go` binding (which compiles against ORT C API 18). For a
+bare local run, install ONNX Runtime 1.18.x and point `ONNXRUNTIME_LIB_PATH`
+at the library (macOS: `brew install onnxruntime`).
 
 **Verification:** see `backend/eval/README.md` for the three eval tiers
 (audio sanity, seed-pinned parity, Whisper WER/CER).
