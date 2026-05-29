@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -197,7 +198,7 @@ func (h *handlers) getJob(c *gin.Context) {
 
 func (h *handlers) pauseJob(c *gin.Context) {
 	if err := h.opts.Jobs.Pause(c.Param("id")); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		writeJobStoreError(c, err)
 		return
 	}
 	h.respondJob(c)
@@ -214,7 +215,7 @@ func (h *handlers) resumeJob(c *gin.Context) {
 		}
 	}
 	if err := h.opts.Jobs.Resume(c.Param("id"), body.All); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		writeJobStoreError(c, err)
 		return
 	}
 	h.respondJob(c)
@@ -222,10 +223,22 @@ func (h *handlers) resumeJob(c *gin.Context) {
 
 func (h *handlers) finalizeJob(c *gin.Context) {
 	if err := h.opts.Jobs.Finalize(c.Param("id")); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		writeJobStoreError(c, err)
 		return
 	}
 	h.respondJob(c)
+}
+
+// writeJobStoreError maps a JobStore control-method error to an HTTP status:
+// errJobNotFound -> 404, everything else (state-guard violations, signal
+// already pending, etc.) -> 409. Centralised so the three control handlers
+// stay symmetric.
+func writeJobStoreError(c *gin.Context, err error) {
+	status := http.StatusConflict
+	if errors.Is(err, errJobNotFound) {
+		status = http.StatusNotFound
+	}
+	c.JSON(status, gin.H{"error": err.Error()})
 }
 
 func (h *handlers) respondJob(c *gin.Context) {

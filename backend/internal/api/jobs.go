@@ -41,10 +41,15 @@ type JobStatus string
 const (
 	StatusQueued  JobStatus = "queued"
 	StatusRunning JobStatus = "running"
-	StatusPaused  JobStatus = "paused" // auto-pause after every N paragraph synthesis steps (pause_every > 0)
+	StatusPaused  JobStatus = "paused" // worker is blocked waiting for /resume or /finalize (manual /pause or auto-pause from pause_every > 0)
 	StatusDone    JobStatus = "done"
 	StatusError   JobStatus = "error"
 )
+
+// errJobNotFound is returned by Pause / Resume / Finalize when the given id
+// has no entry in the store. The HTTP layer differentiates it from state-guard
+// errors so unknown ids surface as 404 (not 409).
+var errJobNotFound = errors.New("job not found")
 
 // errJobFinalized is returned from runInner when the worker exits cleanly via
 // a user finalize signal (running or paused). run() translates it to
@@ -224,7 +229,7 @@ func (s *JobStore) Pause(id string) error {
 	defer s.mu.Unlock()
 	j, ok := s.jobs[id]
 	if !ok {
-		return fmt.Errorf("job not found")
+		return errJobNotFound
 	}
 	if j.Status != StatusRunning {
 		return fmt.Errorf("job is %s, cannot pause", j.Status)
@@ -247,7 +252,7 @@ func (s *JobStore) Resume(id string, all bool) error {
 	j, ok := s.jobs[id]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("job not found")
+		return errJobNotFound
 	}
 	if j.Status != StatusPaused {
 		st := j.Status
@@ -272,7 +277,7 @@ func (s *JobStore) Finalize(id string) error {
 	j, ok := s.jobs[id]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("job not found")
+		return errJobNotFound
 	}
 	if j.Status != StatusRunning && j.Status != StatusPaused {
 		st := j.Status
