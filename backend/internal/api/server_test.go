@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -177,4 +178,85 @@ func TestFinalizeEndpointReturns409WhenDone(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", w.Code)
 	}
+}
+
+// Symmetric to TestPauseEndpointReturns409WhenNotRunning — Resume on a job
+// that is currently running (the worker is in-flight on a paragraph) must be
+// rejected with 409, not silently swallowed.
+func TestResumeEndpointReturns409WhenRunning(t *testing.T) {
+	dir := t.TempDir()
+	eng := newBlockingFakeEngine()
+	store := NewJobStore(dir, eng, 0)
+	srv := NewServer(ServerOpts{Jobs: store, OutboxDir: dir})
+
+	docxPath := writeTestDocx(t, []string{"p1", "p2"})
+	job, _ := store.Submit(docxPath, "t.docx", []string{"M1"}, []string{"en"}, 0)
+	<-eng.calls // worker now in-flight on p1, job status = running
+
+	req := httptest.NewRequest("POST", "/api/jobs/"+job.ID+"/resume",
+		bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+
+	// Drain so t.TempDir cleanup doesn't race with worker writes.
+	eng.release <- struct{}{}
+	releaseN(eng, 1)
+	mustReachStatus(t, store, job.ID, StatusDone)
+}
+
+// All three control endpoints must distinguish "unknown id" (404) from
+// state-guard violations (409). Without the errJobNotFound sentinel they all
+// previously funnelled to 409, which is wrong per the spec.
+func TestControlEndpointsReturn404OnUnknownJob(t *testing.T) {
+	dir := t.TempDir()
+	store := NewJobStore(dir, newFakeEngine(), 0)
+	srv := NewServer(ServerOpts{Jobs: store, OutboxDir: dir})
+
+	for _, path := range []string{
+		"/api/jobs/does-not-exist/pause",
+		"/api/jobs/does-not-exist/resume",
+		"/api/jobs/does-not-exist/finalize",
+	} {
+		req := httptest.NewRequest("POST", path, nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", path, w.Code)
+		}
+	}
+}
+
+// A second Pause while the first is still pending (worker hasn't reached the
+// boundary yet) must be rejected — silently overwriting the flag would lose
+// the second caller's intent on resume reset (the original race the
+// "pause already pending" guard closes).
+func TestPauseTwiceRejectsSecond(t *testing.T) {
+	dir := t.TempDir()
+	eng := newBlockingFakeEngine()
+	store := NewJobStore(dir, eng, 0)
+	docxPath := writeTestDocx(t, []string{"p1", "p2"})
+
+	job, _ := store.Submit(docxPath, "t.docx", []string{"M1"}, []string{"en"}, 0)
+	<-eng.calls // worker in-flight on p1, status running
+
+	if err := store.Pause(job.ID); err != nil {
+		t.Fatalf("first Pause: %v", err)
+	}
+	if err := store.Pause(job.ID); err == nil ||
+		!strings.Contains(err.Error(), "pending") {
+		t.Errorf("second Pause: err = %v, want \"pause already pending\"", err)
+	}
+
+	// Boundary rule: let p1 complete; worker pauses at the boundary.
+	eng.release <- struct{}{}
+	mustReachStatus(t, store, job.ID, StatusPaused)
+	// Finalize so t.TempDir cleanup is clean.
+	if err := store.Finalize(job.ID); err != nil {
+		t.Fatalf("cleanup Finalize: %v", err)
+	}
+	mustReachStatus(t, store, job.ID, StatusDone)
 }
