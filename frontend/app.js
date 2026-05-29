@@ -78,11 +78,31 @@ function renderVoiceChips() {
   for (const v of state.voices) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'chip';
+    b.className = 'chip chip-voice';
     b.setAttribute('aria-pressed', 'false');
     b.dataset.voice = v;
-    b.textContent = v;
-    b.addEventListener('click', () => toggleVoice(v, b));
+
+    const label = document.createElement('span');
+    label.className = 'chip-label';
+    label.textContent = v;
+
+    const play = document.createElement('span');
+    play.className = 'chip-preview';
+    play.setAttribute('aria-label', `Preview ${v}`);
+    play.title = `Preview ${v}`;
+    play.textContent = '▶';
+
+    b.append(label, play);
+    // Clicks on the ▶ glyph play a preview; clicks elsewhere on the chip
+    // toggle selection. We branch on the actual click target so the chip
+    // stays a single <button> (nesting interactive elements is invalid).
+    b.addEventListener('click', (e) => {
+      if (e.target.closest('.chip-preview')) {
+        previewVoice(v, play);
+      } else {
+        toggleVoice(v, b);
+      }
+    });
     el.appendChild(b);
   }
   // Sensible default — pick the first voice so the user can see what a
@@ -91,6 +111,55 @@ function renderVoiceChips() {
     const first = el.querySelector('.chip');
     toggleVoice(state.voices[0], first);
   }
+}
+
+// Module-scoped: only one preview plays at a time. Clicking ▶ on a new chip
+// stops the current one.
+let currentPreview = null; // { audio, btn }
+
+function previewVoice(v, btn) {
+  if (currentPreview) {
+    currentPreview.audio.pause();
+    resetPreviewButton(currentPreview.btn);
+    if (currentPreview.btn === btn) {
+      // Second click on the active preview = stop, no restart.
+      currentPreview = null;
+      return;
+    }
+    currentPreview = null;
+  }
+
+  btn.textContent = '⏳';
+  btn.classList.add('is-loading');
+
+  const audio = new Audio(`/api/voice-samples/${encodeURIComponent(v)}`);
+  currentPreview = { audio, btn };
+
+  audio.addEventListener('playing', () => {
+    btn.classList.remove('is-loading');
+    btn.classList.add('is-playing');
+    btn.textContent = '◼';
+  });
+  audio.addEventListener('ended', () => {
+    if (currentPreview && currentPreview.audio === audio) currentPreview = null;
+    resetPreviewButton(btn);
+  });
+  audio.addEventListener('error', () => {
+    if (currentPreview && currentPreview.audio === audio) currentPreview = null;
+    btn.classList.remove('is-loading', 'is-playing');
+    btn.textContent = '!';
+    setTimeout(() => { if (btn.textContent === '!') btn.textContent = '▶'; }, 1500);
+  });
+
+  audio.play().catch(() => {
+    if (currentPreview && currentPreview.audio === audio) currentPreview = null;
+    resetPreviewButton(btn);
+  });
+}
+
+function resetPreviewButton(btn) {
+  btn.classList.remove('is-loading', 'is-playing');
+  btn.textContent = '▶';
 }
 
 function renderLangChips() {

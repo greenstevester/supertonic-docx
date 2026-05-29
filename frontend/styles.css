@@ -267,6 +267,44 @@ main {
 }
 .chip[aria-pressed="true"] .chip-code { color: var(--paper-deep); }
 
+/* Voice chips host an inline ▶ preview glyph. The chip itself is a single
+   <button>; the .chip-preview span is a click target inside it that the
+   click handler differentiates from selection clicks. */
+.chip-voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px; /* slightly tighter than the default so ▶ doesn't drift right */
+}
+.chip-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 9px;
+  line-height: 1;
+  border: 1px solid var(--ink-faint);
+  border-radius: 2px;
+  color: var(--ink-faint);
+  transition: color .12s ease, border-color .12s ease;
+}
+.chip:hover .chip-preview { color: var(--ink); border-color: var(--ink); }
+.chip[aria-pressed="true"] .chip-preview {
+  color: var(--paper-deep);
+  border-color: var(--paper-deep);
+}
+.chip[aria-pressed="true"]:hover .chip-preview {
+  color: var(--paper);
+  border-color: var(--paper);
+}
+.chip-preview.is-loading { opacity: 0.5; }
+.chip-preview.is-playing { color: var(--ink); border-color: var(--ink); }
+.chip[aria-pressed="true"] .chip-preview.is-playing {
+  color: var(--paper);
+  border-color: var(--paper);
+}
+
 /* ---------- action button ---------- */
 
 .action {

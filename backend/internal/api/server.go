@@ -49,6 +49,7 @@ func NewServer(opts ServerOpts) http.Handler {
 	r.POST("/api/jobs/:id/pause", h.pauseJob)
 	r.POST("/api/jobs/:id/resume", h.resumeJob)
 	r.POST("/api/jobs/:id/finalize", h.finalizeJob)
+	r.GET("/api/voice-samples/:voice", h.voiceSample)
 
 	// Static file serving for generated audio. We use a raw http.FileServer
 	// because Gin's StaticFS doesn't give us the path-walking we want here,
